@@ -607,3 +607,42 @@ def test_config_context_mgr():
         global_config["foo"]
 
     assert list(global_config.items()) == [("validation-level", "full")]
+
+
+def test_cache_size_reads_are_consistent(tau_ms):
+    """Bounding storage-manager caches must not change the data that is read."""
+    baseline = arcae.table(tau_ms).to_arrow()
+
+    # Single global default (MiB)
+    assert arcae.table(tau_ms, cache_size=64).to_arrow().equals(baseline)
+
+    # Unbounded escape hatch (the historical casacore behaviour)
+    assert arcae.table(tau_ms, cache_size=0).to_arrow().equals(baseline)
+
+    # Three levels combined, keyed off the table's real storage-manager and
+    # column names (column: overrides stman: overrides default).
+    groups = {g["NAME"]: g for g in arcae.table(tau_ms).getdminfo().values()}
+    data_sm = next(name for name, g in groups.items() if "DATA" in g["COLUMNS"])
+    spec = {"default": 128, f"stman:{data_sm}": 64, "column:DATA": 32}
+    assert arcae.table(tau_ms, cache_size=spec).to_arrow().equals(baseline)
+
+
+def test_cache_size_validation(tau_ms):
+    """Malformed specs and unknown names are rejected."""
+    # Unknown key prefix rejected during Python normalisation.
+    with pytest.raises(ValueError, match="Invalid cache_size key"):
+        arcae.table(tau_ms, cache_size={"bogus": 1})
+
+    # Non-integer value rejected during normalisation.
+    with pytest.raises(TypeError):
+        arcae.table(tau_ms, cache_size={"default": "big"})
+
+    # bool is not accepted as an int.
+    with pytest.raises(TypeError):
+        arcae.table(tau_ms, cache_size=True)
+
+    # Unknown storage-manager / column names are rejected in the C++ layer.
+    with pytest.raises(Exception, match="Unknown storage manager"):
+        arcae.table(tau_ms, cache_size={"stman:NoSuchSm": 1})
+    with pytest.raises(Exception, match="Unknown column"):
+        arcae.table(tau_ms, cache_size={"column:NOSUCHCOLUMN": 1})

@@ -2,6 +2,10 @@
 History
 =======
 
+X.Y.Z (DD-MM-YYYY)
+------------------
+* Configure storage-manager cache sizes when opening a table (:pr:`222`)
+
 0.5.3 (1-07-2026)
 ------------------
 * Implement write-locking (:pr:`162`)

@@ -2,7 +2,7 @@
 History
 =======
 
-X.Y.Z (DD-MM-YYYY)
+0.5.4 (22-07-2026)
 ------------------
 * Configure storage-manager cache sizes when opening a table (:pr:`222`)
 

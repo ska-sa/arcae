@@ -138,6 +138,47 @@ In the meantime, the support for this ability can be inspected via the
   table = arcae.table("/path/to/measurementset.ms", ninstances=8, readonly=False)
   table.putcol("DATA", ...)  # Fails, ninstances > 1
 
+Bounding storage manager cache sizes
+------------------------------------
+
+casacore's Tiled Storage Managers use **unbounded** caches by default: reading a
+large Measurement Set lets the cache grow until it holds much of the MS in memory.
+Because arcae opens ``ninstances`` independent table instances, each with its own
+caches, this growth is multiplied by the instance count.
+
+The ``cache_size`` argument to ``arcae.table`` bounds these caches. It accepts an
+integer shorthand, or a flat, prefixed dictionary offering three levels of
+granularity, resolved with precedence ``column:`` > ``stman:`` > ``default``:
+
+.. code-block:: python
+
+  # Global default of 256 MiB for every storage manager
+  table = arcae.table("/path/to/measurementset.ms", cache_size=256)
+
+  # Fine-grained control
+  table = arcae.table("/path/to/measurementset.ms", cache_size={
+      "default": 128,                # global default for unmatched columns
+      "stman:TiledData": 256,        # per storage manager
+      "column:WEIGHT_SPECTRUM": 32,  # per column
+  })
+
+  # Restore the historical unbounded behaviour
+  table = arcae.table("/path/to/measurementset.ms", cache_size=0)
+
+Notes:
+
+* All sizes are in **MiB**.
+* ``None`` (the default) applies a bounded default of **128 MiB**; ``0`` restores
+  the historical unbounded behaviour.
+* A per-column cap physically targets that column's storage manager (casacore
+  caps the whole storage manager), so columns sharing a hypercolumn share the
+  cap — last write wins.
+* The cap is applied to **every** opened instance, so the worst-case resident
+  cache is roughly ``ninstances × (number of tiled storage managers) × cache_size``
+  MiB.
+* Unknown ``stman:`` / ``column:`` names, malformed keys, and non-integer or
+  negative values are rejected with a clear error.
+
 Exporting Measurement Sets to Arrow Parquet Datasets
 ----------------------------------------------------
 

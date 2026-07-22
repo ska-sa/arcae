@@ -62,18 +62,18 @@ bool MaybeReopenRW(TableProxy& tp) {
 
 Result<CacheSizeSpec> ParseCacheSizeSpec(const std::string& json) {
   CacheSizeSpec spec;
-  Record rec;
+  Record record;
   try {
-    rec = JsonParser::parse(json).toRecord();
+    record = JsonParser::parse(json).toRecord();
   } catch (std::exception& e) {
     return Status::Invalid("Failed to parse cache_size '", json, "': ", e.what());
   }
 
-  for (casacore::uInt i = 0; i < rec.nfields(); ++i) {
-    std::string name = rec.name(i);
+  for (casacore::uInt i = 0; i < record.nfields(); ++i) {
+    std::string name = record.name(i);
     int value;
     try {
-      value = rec.asInt(i);
+      value = record.asInt(i);
     } catch (std::exception&) {
       return Status::Invalid("cache_size value for '", name, "' is not an integer");
     }
@@ -88,7 +88,7 @@ Result<CacheSizeSpec> ParseCacheSizeSpec(const std::string& json) {
     } else if (StripPrefix(name, kColumnPrefix)) {
       spec.col_mib.emplace(std::move(name), value);
     } else {
-      return Status::Invalid("Unknown cache_size key '", rec.name(i),
+      return Status::Invalid("Unknown cache_size key '", record.name(i),
                              "'. Expected 'default', 'stman:<NAME>' or 'column:<NAME>'");
     }
   }
@@ -105,13 +105,13 @@ Status ApplyCacheSizes(TableProxy& tp, const CacheSizeSpec& spec) {
   std::map<std::string, std::vector<std::string>> sm_columns;
   std::set<std::string> all_columns;
   for (casacore::uInt i = 0; i < dminfo.nfields(); ++i) {
-    const Record& sub = dminfo.subRecord(i);
-    std::string sm_name = sub.asString("NAME");
-    Vector<String> columns = sub.asArrayString("COLUMNS");
-    std::vector<std::string>& colvec = sm_columns[sm_name];
-    colvec.reserve(columns.size());
+    const Record& dm_record = dminfo.subRecord(i);
+    std::string sm_name = dm_record.asString("NAME");
+    Vector<String> columns = dm_record.asArrayString("COLUMNS");
+    std::vector<std::string>& column_vector = sm_columns[sm_name];
+    column_vector.reserve(columns.size());
     for (const auto& column : columns) {
-      colvec.push_back(column);
+      column_vector.push_back(column);
       all_columns.insert(column);
     }
   }
@@ -129,18 +129,18 @@ Status ApplyCacheSizes(TableProxy& tp, const CacheSizeSpec& spec) {
   }
 
   // A resolved size of <= 0 leaves that scope unbounded (casacore default).
-  auto set_col = [&](const std::string& column, int mib) {
+  auto set_column = [&](const std::string& column, int mib) {
     if (mib > 0) tp.setMaximumCacheSize(column, mib);
   };
 
   // Three passes so that column: > stman: > default precedence holds even for
   // columns that share a storage manager (casacore caps the whole storage
   // manager, last write wins).
-  for (const auto& column : all_columns) set_col(column, default_mib);
+  for (const auto& column : all_columns) set_column(column, default_mib);
   for (const auto& [sm, mib] : spec.sm_mib) {
-    for (const auto& column : sm_columns[sm]) set_col(column, mib);
+    for (const auto& column : sm_columns[sm]) set_column(column, mib);
   }
-  for (const auto& [column, mib] : spec.col_mib) set_col(column, mib);
+  for (const auto& [column, mib] : spec.col_mib) set_column(column, mib);
 
   return Status::OK();
 }

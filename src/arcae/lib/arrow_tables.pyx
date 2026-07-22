@@ -117,6 +117,42 @@ cdef CSelection build_selection(index: FullIndex = None):
 
     return builder.Build()
 
+
+def _normalise_cache_size(cache_size: Union[int, dict, None]) -> str:
+    """Normalise the cache_size argument into a JSON string for the C++ layer.
+
+    Accepts None (bounded default), an int (global default in MiB), or a flat
+    dict combining the three levels via prefixed keys: 'default',
+    'stman:<NAME>' and 'column:<NAME>', each mapping to a size in MiB
+    (0 == unbounded).
+    """
+    if cache_size is None:
+        return "{}"
+
+    # NOTE: libcpp's bool is cimported into this module, shadowing the Python
+    # builtin, so bool values are detected by identity rather than isinstance.
+    # bool is a subclass of int; reject it explicitly to avoid surprises.
+    if cache_size is True or cache_size is False:
+        raise TypeError("cache_size must be an int or dict, not bool")
+
+    if isinstance(cache_size, int):
+        return json.dumps({"default": cache_size})
+
+    if isinstance(cache_size, dict):
+        for key, value in cache_size.items():
+            if not (key == "default"
+                    or key.startswith("stman:")
+                    or key.startswith("column:")):
+                raise ValueError(
+                    f"Invalid cache_size key {key!r}. Expected 'default', "
+                    f"'stman:<NAME>' or 'column:<NAME>'")
+            if value is True or value is False or not isinstance(value, int):
+                raise TypeError(f"cache_size value for {key!r} must be an int")
+        return json.dumps(cache_size)
+
+    raise TypeError(f"Invalid cache_size type {type(cache_size)}")
+
+
 # Create a Cython extension type around the CCasaTable C++ instance
 cdef class Table:
     cdef shared_ptr[CCasaTable] c_table
@@ -157,7 +193,8 @@ cdef class Table:
         filename: str,
         ninstances: int = 1,
         readonly: bool = True,
-        lockoptions: Union[str, dict] = "auto"
+        lockoptions: Union[str, dict] = "auto",
+        cache_size: Union[int, dict, None] = None
     ) -> Table:
         cdef:
             string cfilename = tobytes(filename)
@@ -172,10 +209,11 @@ cdef class Table:
             raise TypeError(f"Invalid lockoptions type {lockoptions}")
 
         clockoptions: string = tobytes(lockoptions)
+        ccache_size: string = tobytes(_normalise_cache_size(cache_size))
 
         with nogil:
             table.c_table = GetResultValue(
-                COpenTable(cfilename, cninstances, readonly, clockoptions)
+                COpenTable(cfilename, cninstances, readonly, clockoptions, ccache_size)
             )
         return table
 
@@ -184,7 +222,8 @@ cdef class Table:
         filename: str,
         subtable: str = "MAIN",
         table_desc: Dict | None = None,
-        dminfo: Dict | None = None
+        dminfo: Dict | None = None,
+        cache_size: Union[int, dict, None] = None
     ) -> Table:
         cdef:
             Table table = Table.__new__(Table)
@@ -195,12 +234,14 @@ cdef class Table:
 
         cjson_table_desc: string = tobytes(json_table_desc)
         cjson_dm_info: string = tobytes(json_dminfo)
+        cjson_cache_size: string = tobytes(_normalise_cache_size(cache_size))
 
         with nogil:
             table.c_table = GetResultValue(CDefaultMS(cfilename,
                                                       csubtable,
                                                       cjson_table_desc,
-                                                      cjson_dm_info))
+                                                      cjson_dm_info,
+                                                      cjson_cache_size))
         return table
 
     def to_arrow(

@@ -12,10 +12,12 @@ namespace arcae {
 
 arrow::Result<std::shared_ptr<NewTableProxy>> OpenTable(
     const std::string& filename, std::size_t ninstances = 1, bool readonly = true,
-    const std::string& json_lockoptions = R"({"option": "auto"})");
+    const std::string& json_lockoptions = R"({"option": "auto"})",
+    const std::string& json_cache_size = "{}");
 arrow::Result<std::shared_ptr<NewTableProxy>> DefaultMS(
     const std::string& name, const std::string& subtable = "MAIN",
-    const std::string& json_table_desc = "{}", const std::string& json_dminfo = "{}");
+    const std::string& json_table_desc = "{}", const std::string& json_dminfo = "{}",
+    const std::string& json_cache_size = "{}");
 arrow::Result<std::shared_ptr<NewTableProxy>> Taql(
     const std::string& taql,
     const std::vector<std::shared_ptr<NewTableProxy>>& tables = {});

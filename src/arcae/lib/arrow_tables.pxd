@@ -94,12 +94,14 @@ cdef extern from "arcae/table_factory.h" namespace "arcae" nogil:
             const string & filename,
             size_t ninstances,
             bool readonly,
-            const string & json_lockoptions)
+            const string & json_lockoptions,
+            const string & json_cache_size)
     cdef CResult[shared_ptr[CCasaTable]] CDefaultMS" arcae::DefaultMS"(
             const string & name,
             const string & subtable,
             const string & json_table_desc,
-            const string & json_dminfo)
+            const string & json_dminfo,
+            const string & json_cache_size)
     cdef CResult[shared_ptr[CCasaTable]] CTaql" arcae::Taql"(
             const string & taql,
             const vector[shared_ptr[CCasaTable]] & tables)

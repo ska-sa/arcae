@@ -42,7 +42,12 @@ add_executable(new_table_proxy_test new_table_proxy_test.cc)
 target_link_libraries(new_table_proxy_test PRIVATE GTest::gtest_main arcae test_utils)
 add_test(new_table_proxy_test new_table_proxy_test)
 
+add_executable(cache_size_test cache_size_test.cc)
+target_link_libraries(cache_size_test PRIVATE GTest::gtest_main arcae test_utils)
+add_test(cache_size_test cache_size_test)
+
 set_tests_properties(result_shape_test
+                     cache_size_test
                      data_partition_test
                      dev_transpose_test
                      isolated_table_proxy_test

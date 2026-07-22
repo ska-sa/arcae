@@ -28,6 +28,7 @@
 
 #include "arcae/descriptor.h"
 #include "arcae/new_table_proxy.h"
+#include "arcae/table_utils.h"
 
 using namespace std::literals;
 
@@ -68,14 +69,18 @@ static constexpr char kMain[] = "MAIN";
 
 Result<std::shared_ptr<NewTableProxy>> OpenTable(const std::string& filename,
                                                  std::size_t ninstances, bool readonly,
-                                                 const std::string& json_lockoptions) {
+                                                 const std::string& json_lockoptions,
+                                                 const std::string& json_cache_size) {
+  ARROW_ASSIGN_OR_RAISE(auto cache_spec, detail::ParseCacheSizeSpec(json_cache_size));
   return NewTableProxy::Make(
-      [&filename, &readonly, &json_lockoptions]() -> Result<std::shared_ptr<TableProxy>> {
+      [&filename, &readonly, &json_lockoptions,
+       &cache_spec]() -> Result<std::shared_ptr<TableProxy>> {
         auto lock_record = JsonParser::parse(json_lockoptions).toRecord();
         try {
           auto proxy = std::make_shared<TableProxy>(filename, lock_record,
                                                     Table::TableOption::Old);
           if (!readonly) proxy->reopenRW();
+          ARROW_RETURN_NOT_OK(detail::ApplyCacheSizes(*proxy, cache_spec));
           return proxy;
         } catch (std::exception& e) {
           return Status::Invalid(e.what());
@@ -87,7 +92,8 @@ Result<std::shared_ptr<NewTableProxy>> OpenTable(const std::string& filename,
 Result<std::shared_ptr<NewTableProxy>> DefaultMS(const std::string& name,
                                                  const std::string& subtable,
                                                  const std::string& json_table_desc,
-                                                 const std::string& json_dminfo) {
+                                                 const std::string& json_dminfo,
+                                                 const std::string& json_cache_size) {
   // Upper case subtable name
   casacore::String usubtable(subtable.size(), '0');
   std::transform(std::begin(subtable), std::end(subtable), std::begin(usubtable),
@@ -104,6 +110,7 @@ Result<std::shared_ptr<NewTableProxy>> DefaultMS(const std::string& name,
   ARROW_ASSIGN_OR_RAISE(
       auto setup_new_table,
       DefaultMSFactory(modname, usubtable, json_table_desc, json_dminfo));
+  ARROW_ASSIGN_OR_RAISE(auto cache_spec, detail::ParseCacheSizeSpec(json_cache_size));
 
   return NewTableProxy::Make([&]() -> Result<std::shared_ptr<TableProxy>> {
     // MAIN Measurement Set case
@@ -112,7 +119,9 @@ Result<std::shared_ptr<NewTableProxy>> DefaultMS(const std::string& name,
       // Create the MS default subtables
       ms.createDefaultSubtables(Table::New);
       // Create a table proxy
-      return std::make_shared<TableProxy>(ms);
+      auto proxy = std::make_shared<TableProxy>(ms);
+      ARROW_RETURN_NOT_OK(detail::ApplyCacheSizes(*proxy, cache_spec));
+      return proxy;
     }
 
     // Open the base Measurement Set table in order to link the subtable
@@ -171,6 +180,7 @@ Result<std::shared_ptr<NewTableProxy>> DefaultMS(const std::string& name,
 
     // Link the table against the Measurement Set
     ms.rwKeywordSet().defineTable(usubtable, subtable->table());
+    ARROW_RETURN_NOT_OK(detail::ApplyCacheSizes(*subtable, cache_spec));
     return subtable;
   });
 }

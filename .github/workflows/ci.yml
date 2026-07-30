@@ -223,7 +223,7 @@ jobs:
             VCPKG_INSTALLED_DIR=${{ env.VCPKG_INSTALLED_DIR }}
             LD_LIBRARY_PATH=${{ env.VCPKG_INSTALLED_DIR }}/${{ matrix.triplet }}/lib
             MACOSX_DEPLOYMENT_TARGET=${{ matrix.deployment_target }}
-        uses: pypa/cibuildwheel@v4.1.0
+        uses: pypa/cibuildwheel@v4.1.1
 
       - name: Upload wheel artifacts
         uses: actions/upload-artifact@v7

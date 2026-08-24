@@ -66,6 +66,11 @@ def safe_multithreaded_writes() -> bool:
 
 cdef CSelection build_selection(index: FullIndex = None):
     cdef CSelectionBuilder builder = CSelectionBuilder().Order(b"C")
+    cdef IndexType start
+    cdef IndexType stop
+    cdef IndexType i
+    cdef Index vec_index
+    cdef IndexType[:] dim_array_view
 
     if index is None:
         return builder.Build()
@@ -86,19 +91,18 @@ cdef CSelection build_selection(index: FullIndex = None):
             if dim_index.step is not None and dim_index.step != 1:
                 raise ValueError(f"slice step {dim_index.step} is not 1")
 
-            start: IndexType = dim_index.start
-            stop: IndexType = dim_index.stop
+            start = dim_index.start
+            stop = dim_index.stop
 
             with nogil:
-                vec_index: Index = Index(stop - start, 0)
+                vec_index = Index(stop - start, 0)
 
-                i: IndexType = 0
                 for i in range(stop - start):
                     vec_index[i] = start + i
 
                 builder.Add(move(vec_index))
         elif isinstance(dim_index, list):
-            vec_index: Index = dim_index
+            vec_index = dim_index
             builder.Add(move(vec_index))
         elif isinstance(dim_index, np.ndarray):
             if dim_index.ndim != 1:
@@ -106,10 +110,10 @@ cdef CSelection build_selection(index: FullIndex = None):
                     f"Multi-dimensional ndarray received "
                     f"as index in dimension {d}")
             if dim_index.dtype == np.int64:
-                dim_array_view: IndexType [:] = dim_index
+                dim_array_view = dim_index
                 builder.Add(IndexSpan(&dim_array_view[0], dim_array_view.shape[0]))
             else:
-                vec_index: Index = dim_index
+                vec_index = dim_index
                 builder.Add(move(vec_index))
         else:
             raise TypeError(f"Invalid index type {type(dim_index)} "

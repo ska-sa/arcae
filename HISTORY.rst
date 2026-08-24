@@ -4,7 +4,7 @@ History
 
 X.Y.Z (DD-MM-YYYY)
 ------------------
-* Hoist ``build_selection`` local declarations to fix Cython 3.2 redeclaration errors (:pr:`PR`)
+* Hoist ``build_selection`` local declarations to fix Cython 3.2 redeclaration errors (:pr:`229`)
 
 0.5.4 (22-07-2026)
 ------------------

@@ -68,7 +68,7 @@ jobs:
           python -m pip install pyarrow==23.0.1
 
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v6.2.3
+        uses: aws-actions/configure-aws-credentials@v6.2.4
         with:
           role-to-assume: ${{ secrets.GHA_ROLE_ARN }}
           aws-region: af-south-1
@@ -115,7 +115,7 @@ jobs:
           python -m pip install pyarrow==23.0.1
 
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v6.2.3
+        uses: aws-actions/configure-aws-credentials@v6.2.4
         with:
           role-to-assume: ${{ secrets.GHA_ROLE_ARN }}
           aws-region: af-south-1
@@ -201,7 +201,7 @@ jobs:
           echo "cibw_build=$CIBW_BUILD" >> $GITHUB_OUTPUT
 
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v6.2.3
+        uses: aws-actions/configure-aws-credentials@v6.2.4
         with:
           role-to-assume: ${{ secrets.GHA_ROLE_ARN }}
           aws-region: af-south-1

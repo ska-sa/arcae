@@ -166,7 +166,7 @@ TableDesc MSSubtableDesc(bool complete) {
 void AddMeasureMetadata(TableDesc& td, const String& column, const String& type,
                         const String& ref, const String& unit) {
   auto& keywords = td.rwColumnDesc(column).rwKeywordSet();
-  keywords.define("QuantumUnits", Vector<String>(1, unit));
+  keywords.define("QuantumUnits", Vector<String>(3, unit));
 
   Record measinfo;
   measinfo.define("type", type);
@@ -184,10 +184,9 @@ TableDesc PhasedArrayMSDesc(bool complete) {
   td.addColumn(ArrayColumnDesc<Double>(
       "ELEMENT_OFFSET", "Offset per element", 2));
   td.addColumn(ArrayColumnDesc<Bool>(
-      "ELEMENT_FLAG", "Flag of elements in array, for each polarization", 2));
+      "ELEMENT_FLAG", "Flag of elements in array", 2));
 
   AddMeasureMetadata(td, "POSITION", "position", "ITRF", "m");
-  AddMeasureMetadata(td, "COORDINATE_AXES", "direction", "ITRF", "m");
   AddMeasureMetadata(td, "ELEMENT_OFFSET", "position", "ITRF", "m");
 
   if (complete) {

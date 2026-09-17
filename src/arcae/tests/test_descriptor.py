@@ -100,10 +100,14 @@ def test_phased_array_descriptor_and_subtable(tmp_path_factory):
     assert required["COORDINATE_AXES"]["shape"] == [3, 3]
     assert required["ELEMENT_OFFSET"]["ndim"] == 2
     assert required["ELEMENT_FLAG"]["ndim"] == 2
-    assert required["ELEMENT_OFFSET"]["keywords"] == {
-        "MEASINFO": {"Ref": "ITRF", "type": "position"},
-        "QuantumUnits": ["m"],
+    assert required["COORDINATE_AXES"]["keywords"] == {}
+    for column in ("POSITION", "ELEMENT_OFFSET"):
+        assert required[column]["keywords"]["QuantumUnits"] == ["m", "m", "m"]
+    assert required["ELEMENT_OFFSET"]["keywords"]["MEASINFO"] == {
+        "Ref": "ITRF",
+        "type": "position",
     }
+    assert required["ELEMENT_FLAG"]["comment"] == "Flag of elements in array"
 
     ms = tmp_path_factory.mktemp("test") / "test.ms"
     with Table.ms_from_descriptor(str(ms)) as main:

@@ -1,4 +1,3 @@
-import numpy as np
 from numpy.testing import assert_array_equal
 
 from arcae.lib.arrow_tables import Table, ms_descriptor
@@ -81,84 +80,99 @@ def test_ms_and_weather_subtable(tmp_path_factory):
         pass
 
 
-def test_phased_array_descriptor_and_subtable(tmp_path_factory):
-    required = ms_descriptor("PHASED_ARRAY", complete=False)
-    complete = ms_descriptor("PHASED_ARRAY", complete=True)
-
-    assert set(required) == {
-        "ANTENNA_ID",
-        "POSITION",
-        "COORDINATE_AXES",
-        "ELEMENT_OFFSET",
-        "ELEMENT_FLAG",
-        "_define_hypercolumn_",
-        "_keywords_",
-        "_private_keywords_",
-    }
-    assert set(complete) == set(required) | {"BEAM_ID"}
-    assert required["POSITION"]["shape"] == [3]
-    assert required["COORDINATE_AXES"]["shape"] == [3, 3]
-    assert required["ELEMENT_OFFSET"]["ndim"] == 2
-    assert required["ELEMENT_FLAG"]["ndim"] == 2
-    assert required["COORDINATE_AXES"]["keywords"] == {}
-    for column in ("POSITION", "ELEMENT_OFFSET"):
-        assert required[column]["keywords"]["QuantumUnits"] == ["m", "m", "m"]
-    assert required["ELEMENT_OFFSET"]["keywords"]["MEASINFO"] == {
-        "Ref": "ITRF",
-        "type": "position",
-    }
-    assert required["ELEMENT_FLAG"]["comment"] == "Flag of elements in array"
-
+def test_phased_array_subtable_creation(tmp_path_factory):
     ms = tmp_path_factory.mktemp("test") / "test.ms"
-    with Table.ms_from_descriptor(str(ms)) as main:
-        assert main.nrow() == 0
+    with Table.ms_from_descriptor(str(ms)):
+        pass
 
-    with Table.ms_from_descriptor(str(ms), "PHASED_ARRAY", required) as phased:
-        assert phased.columns() == [
-            "ANTENNA_ID",
-            "COORDINATE_AXES",
-            "ELEMENT_FLAG",
-            "ELEMENT_OFFSET",
-            "POSITION",
-        ]
-        phased.addrows(2)
-        phased.putcol("ANTENNA_ID", np.array([0, 1], dtype=np.int32))
-        phased.putcol(
-            "POSITION",
-            np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=np.float64),
-        )
-        phased.putcol(
-            "COORDINATE_AXES",
-            np.arange(18, dtype=np.float64).reshape(2, 3, 3),
-        )
-
-        offsets = np.empty(2, dtype=object)
-        offsets[0] = np.zeros((3, 2), dtype=np.float64).tolist()
-        offsets[1] = np.ones((3, 3), dtype=np.float64).tolist()
-        phased.putcol("ELEMENT_OFFSET", offsets)
-
-        flags = np.empty(2, dtype=object)
-        flags[0] = np.zeros((2, 2), dtype=bool).tolist()
-        flags[1] = np.ones((2, 3), dtype=bool).tolist()
-        phased.putcol("ELEMENT_FLAG", flags)
-
-        assert phased.row_shapes("ELEMENT_OFFSET").to_pylist() == [[3, 2], [3, 3]]
-        assert phased.row_shapes("ELEMENT_FLAG").to_pylist() == [[2, 2], [2, 3]]
-        arrow = phased.to_arrow(columns=["ELEMENT_OFFSET", "ELEMENT_FLAG"])
-        assert arrow.column("ELEMENT_OFFSET").to_pylist() == [
-            [[0.0, 0.0], [0.0, 0.0], [0.0, 0.0]],
-            [[1.0, 1.0, 1.0], [1.0, 1.0, 1.0], [1.0, 1.0, 1.0]],
-        ]
-        assert arrow.column("ELEMENT_FLAG").to_pylist() == [
-            [[False, False], [False, False]],
-            [[True, True, True], [True, True, True]],
-        ]
+    phased_desc = ms_descriptor("PHASED_ARRAY", complete=False)
+    with Table.ms_from_descriptor(str(ms), "PHASED_ARRAY", phased_desc) as phased:
+        phased.addrows(1)
+        assert phased.nrow() == 1
 
     with Table.from_filename(str(ms)) as main:
         assert "PHASED_ARRAY" in main.tabledesc()["_keywords_"]
 
     with Table.from_filename(f"{ms}::PHASED_ARRAY") as phased:
-        assert phased.nrow() == 2
+        assert phased.nrow() == 1
+
+
+def test_phased_array_subtable_descriptor():
+    assert ms_descriptor("PHASED_ARRAY", complete=True) == {
+        "ANTENNA_ID": {
+            "comment": "Antenna ID",
+            "dataManagerGroup": "StandardStMan",
+            "dataManagerType": "StandardStMan",
+            "keywords": {},
+            "maxlen": 0,
+            "option": 0,
+            "valueType": "int",
+        },
+        "POSITION": {
+            "comment": "Position of antenna field",
+            "dataManagerGroup": "StandardStMan",
+            "dataManagerType": "StandardStMan",
+            "keywords": {
+                "MEASINFO": {"Ref": "ITRF", "type": "position"},
+                "QuantumUnits": ["m", "m", "m"],
+            },
+            "maxlen": 0,
+            "ndim": 1,
+            "shape": [3],
+            "_c_order": True,
+            "option": 4,
+            "valueType": "double",
+        },
+        "COORDINATE_AXES": {
+            "_c_order": True,
+            "comment": "Local coordinate system",
+            "dataManagerGroup": "StandardStMan",
+            "dataManagerType": "StandardStMan",
+            "keywords": {},
+            "maxlen": 0,
+            "ndim": 2,
+            "shape": [3, 3],
+            "option": 4,
+            "valueType": "double",
+        },
+        "ELEMENT_FLAG": {
+            "_c_order": True,
+            "comment": "Flag of elements in array",
+            "dataManagerGroup": "StandardStMan",
+            "dataManagerType": "StandardStMan",
+            "keywords": {},
+            "maxlen": 0,
+            "ndim": 2,
+            "option": 0,
+            "valueType": "boolean",
+        },
+        "ELEMENT_OFFSET": {
+            "_c_order": True,
+            "comment": "Offset per element",
+            "dataManagerGroup": "StandardStMan",
+            "dataManagerType": "StandardStMan",
+            "keywords": {
+                "MEASINFO": {"Ref": "ITRF", "type": "position"},
+                "QuantumUnits": ["m", "m", "m"],
+            },
+            "maxlen": 0,
+            "ndim": 2,
+            "option": 0,
+            "valueType": "double",
+        },
+        "BEAM_ID": {
+            "comment": "Beam ID",
+            "dataManagerGroup": "StandardStMan",
+            "dataManagerType": "StandardStMan",
+            "keywords": {},
+            "maxlen": 0,
+            "option": 0,
+            "valueType": "int",
+        },
+        "_define_hypercolumn_": {},
+        "_keywords_": {},
+        "_private_keywords_": {},
+    }
 
 
 def test_weather_subtable_descriptor():

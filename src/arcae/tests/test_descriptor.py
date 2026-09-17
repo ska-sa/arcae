@@ -87,7 +87,6 @@ def test_phased_array_descriptor_and_subtable(tmp_path_factory):
 
     assert set(required) == {
         "ANTENNA_ID",
-        "PHASED_ARRAY_ID",
         "POSITION",
         "COORDINATE_AXES",
         "ELEMENT_OFFSET",
@@ -116,12 +115,10 @@ def test_phased_array_descriptor_and_subtable(tmp_path_factory):
             "COORDINATE_AXES",
             "ELEMENT_FLAG",
             "ELEMENT_OFFSET",
-            "PHASED_ARRAY_ID",
             "POSITION",
         ]
         phased.addrows(2)
         phased.putcol("ANTENNA_ID", np.array([0, 1], dtype=np.int32))
-        phased.putcol("PHASED_ARRAY_ID", np.array([10, 11], dtype=np.int32))
         phased.putcol(
             "POSITION",
             np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=np.float64),

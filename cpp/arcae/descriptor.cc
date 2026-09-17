@@ -16,12 +16,15 @@
 
 #include <arrow/result.h>
 
+#include <casacore/casa/Arrays/IPosition.h>
 #include <casacore/casa/Containers/RecordInterface.h>
 #include <casacore/casa/Containers/ValueHolder.h>
 #include <casacore/casa/Json.h>
 #include <casacore/casa/Json/JsonKVMap.h>
 #include <casacore/casa/Json/JsonParser.h>
 #include <casacore/ms/MeasurementSets/MeasurementSet.h>
+#include <casacore/tables/Tables/ArrColDesc.h>
+#include <casacore/tables/Tables/ScaColDesc.h>
 #include <casacore/tables/Tables/TableDesc.h>
 #include <casacore/tables/Tables/TableProxy.h>
 #include <casacore/tables/Tables/TableRecord.h>
@@ -32,6 +35,12 @@ using ::arrow::Result;
 
 using ::casacore::JsonOut;
 using ::casacore::JsonParser;
+using ::casacore::ArrayColumnDesc;
+using ::casacore::Bool;
+using ::casacore::Double;
+using ::casacore::IPosition;
+using ::casacore::Int;
+using ::casacore::ScalarColumnDesc;
 using ::casacore::String;
 using ::casacore::Vector;
 
@@ -75,6 +84,7 @@ static constexpr char kFlagCmd[] = "FLAG_CMD";
 static constexpr char kFreqOffset[] = "FREQ_OFFSET";
 static constexpr char kHistory[] = "HISTORY";
 static constexpr char kObservation[] = "OBSERVATION";
+static constexpr char kPhasedArray[] = "PHASED_ARRAY";
 static constexpr char kPointing[] = "POINTING";
 static constexpr char kPolarization[] = "POLARIZATION";
 static constexpr char kProcessor[] = "PROCESSOR";
@@ -153,6 +163,41 @@ TableDesc MSSubtableDesc(bool complete) {
   return td;
 }
 
+void AddMeasureMetadata(TableDesc& td, const String& column, const String& type,
+                        const String& ref, const String& unit) {
+  auto& keywords = td.rwColumnDesc(column).rwKeywordSet();
+  keywords.define("QuantumUnits", Vector<String>(1, unit));
+
+  Record measinfo;
+  measinfo.define("type", type);
+  measinfo.define("Ref", ref);
+  keywords.defineRecord("MEASINFO", measinfo);
+}
+
+TableDesc PhasedArrayMSDesc(bool complete) {
+  TableDesc td;
+  td.addColumn(ScalarColumnDesc<Int>("ANTENNA_ID", "Antenna ID"));
+  td.addColumn(ScalarColumnDesc<Int>("PHASED_ARRAY_ID", "Phased array ID"));
+  td.addColumn(ArrayColumnDesc<Double>(
+      "POSITION", "Position of antenna field", IPosition({3})));
+  td.addColumn(ArrayColumnDesc<Double>(
+      "COORDINATE_AXES", "Local coordinate system", IPosition({3, 3})));
+  td.addColumn(ArrayColumnDesc<Double>(
+      "ELEMENT_OFFSET", "Offset per element", 2));
+  td.addColumn(ArrayColumnDesc<Bool>(
+      "ELEMENT_FLAG", "Flag of elements in array, for each polarization", 2));
+
+  AddMeasureMetadata(td, "POSITION", "position", "ITRF", "m");
+  AddMeasureMetadata(td, "COORDINATE_AXES", "direction", "ITRF", "m");
+  AddMeasureMetadata(td, "ELEMENT_OFFSET", "position", "ITRF", "m");
+
+  if (complete) {
+    td.addColumn(ScalarColumnDesc<Int>("BEAM_ID", "Beam ID"));
+  }
+
+  return td;
+}
+
 std::string RecordToJson(const Record& record) {
   std::ostringstream json_oss;
   auto record_json = JsonOut(json_oss);
@@ -196,6 +241,8 @@ Result<TableDesc> MSTableDescriptor(const String& table, bool complete) {
     return MSSubtableDesc<MSHistory>(complete);
   } else if (table_ == kObservation) {
     return MSSubtableDesc<MSObservation>(complete);
+  } else if (table_ == kPhasedArray) {
+    return PhasedArrayMSDesc(complete);
   } else if (table_ == kPointing) {
     return MSSubtableDesc<MSPointing>(complete);
   } else if (table_ == kPolarization) {

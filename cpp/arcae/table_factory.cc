@@ -64,6 +64,7 @@ namespace {
 
 /// Table and subtable names
 static constexpr char kMain[] = "MAIN";
+static constexpr char kPhasedArray[] = "PHASED_ARRAY";
 
 }  // namespace
 
@@ -156,6 +157,8 @@ Result<std::shared_ptr<NewTableProxy>> DefaultMS(const std::string& name,
       subtable = std::make_shared<TableProxy>(MSHistory(setup_new_table));
     } else if (usubtable == MS::keywordName(MS::OBSERVATION)) {
       subtable = std::make_shared<TableProxy>(MSObservation(setup_new_table));
+    } else if (usubtable == kPhasedArray) {
+      subtable = std::make_shared<TableProxy>(Table(setup_new_table));
     } else if (usubtable == MS::keywordName(MS::POINTING)) {
       subtable = std::make_shared<TableProxy>(MSPointing(setup_new_table));
     } else if (usubtable == MS::keywordName(MS::POLARIZATION)) {

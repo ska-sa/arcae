@@ -174,6 +174,8 @@ void AddMeasureMetadata(TableDesc& td, const String& column, const String& type,
   keywords.defineRecord("MEASINFO", measinfo);
 }
 
+// See the MS v3.0 beta documentation for the PHASED_ARRAY subtable
+// https://casacore.github.io/casacore-notes/264.html#x1-3400015
 TableDesc PhasedArrayMSDesc(bool complete) {
   TableDesc td;
   td.addColumn(ScalarColumnDesc<Int>("ANTENNA_ID", "Antenna ID"));

@@ -178,7 +178,7 @@ Result<std::shared_ptr<NewTableProxy>> DefaultMS(const std::string& name,
     }
 
     if (!subtable) {
-      return arrow::Status::Invalid("Uknown table type: ", usubtable);
+      return arrow::Status::Invalid("Unknown table type: ", usubtable);
     }
 
     // Link the table against the Measurement Set

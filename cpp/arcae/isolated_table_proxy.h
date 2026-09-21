@@ -26,6 +26,8 @@ class IsolatedTableProxy : public std::enable_shared_from_this<IsolatedTableProx
   arrow::Result<bool> Close();
   // Is the IsolatedTableProxy closed?
   bool IsClosed() const;
+  // Is the calling thread one of the isolation threads owned by this proxy?
+  bool OwnsThisThread() const;
   // Return a failed status code if the table is closed
   arrow::Status CheckClosed() const;
   // Destroy the IsolatedTableProxy, attempting
@@ -244,6 +246,10 @@ class IsolatedTableProxy : public std::enable_shared_from_this<IsolatedTableProx
 
   // Get the I/O pool for the given instance
   const std::shared_ptr<arrow::internal::ThreadPool>& GetPool(std::size_t instance) const;
+
+  // Relinquish the I/O pools, deferring their destruction to another thread
+  // if the calling thread belongs to one of them
+  void ReleasePools();
 
   // Run the given functor in the I/O pool
   // and wait for the future's result

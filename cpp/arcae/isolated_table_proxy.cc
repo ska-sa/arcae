@@ -15,6 +15,7 @@
 using ::arrow::Future;
 using ::arrow::Result;
 using ::arrow::Status;
+using ::arrow::internal::GetCpuThreadPool;
 using ::arrow::internal::ThreadPool;
 using ::casacore::TableProxy;
 
@@ -73,6 +74,31 @@ std::shared_ptr<IsolatedTableProxy> IsolatedTableProxy::SpawnWriter() {
   return itp;
 }
 
+bool IsolatedTableProxy::OwnsThisThread() const {
+  for (const auto& [proxy, pool] : proxy_pools_) {
+    if (pool->OwnsThisThread()) return true;
+  }
+  return false;
+}
+
+void IsolatedTableProxy::ReleasePools() {
+  if (!OwnsThisThread()) return;
+
+  // ThreadPool::Shutdown() waits for the pool's workers to exit, so destroying
+  // a pool from one of its own workers parks that worker forever. Hand the
+  // pools to the CPU pool for destruction instead. Ownership is transferred
+  // only once the task is queued: a failed Spawn() destroys its argument on
+  // the calling thread, which is what must be avoided here.
+  auto* pools = new std::vector<ProxyAndPool>(std::move(proxy_pools_));
+  auto status = GetCpuThreadPool()->Spawn([pools]() { delete pools; });
+
+  if (!status.ok()) {
+    // Only reachable once the CPU pool has shut down, i.e. during process
+    // teardown, where leaking the pools beats hanging the calling thread.
+    ARROW_LOG(WARNING) << "Unable to defer I/O pool destruction: " << status;
+  }
+}
+
 Status IsolatedTableProxy::CheckClosed() const {
   if (!is_closed_) return Status::OK();
   return Status::Invalid("TableProxy is closed");
@@ -84,7 +110,24 @@ Result<bool> IsolatedTableProxy::Close() {
   std::shared_ptr<void> defer_close(nullptr, [this](...) { this->is_closed_ = true; });
   std::vector<Future<bool>> results;
   results.reserve(proxy_pools_.size());
+  Status inline_status = Status::OK();
   for (auto& [proxy, pool] : proxy_pools_) {
+    // Submitting to a pool that owns the calling thread and then waiting on the
+    // result deadlocks: the only worker able to run the close task is the
+    // thread doing the waiting. This happens whenever the last reference to
+    // this proxy is dropped on an isolation thread, as it is when the read and
+    // write callbacks holding that reference are torn down once their pipeline
+    // completes. Closing inline is correct there: being on the isolation
+    // thread is all the submission is there to guarantee.
+    if (pool->OwnsThisThread()) {
+      try {
+        proxy->flush(false);
+        proxy->close();
+      } catch (const std::exception& e) {
+        inline_status = Status::Invalid("Error closing table: ", e.what());
+      }
+      continue;
+    }
     results.push_back(arrow::DeferNotOk(pool->Submit([tp = proxy]() -> Result<bool> {
       // flush/close may throw casacore::AipsError; an exception escaping a
       // pool task would terminate the process, so convert it to a Status.
@@ -101,8 +144,13 @@ Result<bool> IsolatedTableProxy::Close() {
   ARROW_ASSIGN_OR_RAISE(auto outcomes, all_done.MoveResult());
   // Drain any late-scheduled continuations (e.g. Then callbacks) so that
   // members are not destroyed while a pool task may still reference them.
-  for (auto& pp : proxy_pools_) pp.io_pool_->WaitForIdle();
+  // A pool running the calling thread is busy by definition and can only go
+  // idle once this call returns.
+  for (auto& pp : proxy_pools_) {
+    if (!pp.io_pool_->OwnsThisThread()) pp.io_pool_->WaitForIdle();
+  }
   // Surface the first close failure, if any (still leaving the proxy closed).
+  ARROW_RETURN_NOT_OK(inline_status);
   for (const auto& outcome : outcomes) {
     ARROW_RETURN_NOT_OK(outcome.status());
   }
@@ -114,6 +162,7 @@ IsolatedTableProxy::~IsolatedTableProxy() {
   if (!result.ok()) {
     ARROW_LOG(WARNING) << "Error closing file " << result.status();
   }
+  ReleasePools();
 }
 
 }  // namespace detail

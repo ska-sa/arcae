@@ -1,4 +1,6 @@
+#include <chrono>
 #include <memory>
+#include <thread>
 #include "gtest/gtest.h"
 
 #include <arrow/status.h>
@@ -19,6 +21,7 @@
 #include "arcae/isolated_table_proxy.h"
 
 using ::arcae::GetArrayColumn;
+using ::arcae::detail::CasaLockType;
 using ::arcae::detail::IsolatedTableProxy;
 
 using casacore::Array;
@@ -61,17 +64,41 @@ class IsolatedTableProxyTest : public ::testing::Test {
     data.putColumn(Array<Complex>(IPos({kncorr, knchan, knrow}), {1, 2}));
   }
 
-  arrow::Result<std::shared_ptr<IsolatedTableProxy>> OpenTable() {
-    return IsolatedTableProxy::Make([name = table_name_]() {
+  // Open the table. If given, weak_proxy is set to the underlying TableProxy,
+  // whose expiry marks the point at which the table has actually been released
+  arrow::Result<std::shared_ptr<IsolatedTableProxy>> OpenTable(
+      std::weak_ptr<TableProxy>* weak_proxy = nullptr) {
+    return IsolatedTableProxy::Make([name = table_name_, weak_proxy]() {
       auto lock = TableLock(TableLock::LockOption::AutoLocking);
       auto lockoptions = Record();
       lockoptions.define("option", "user");
       lockoptions.define("internal", lock.interval());
       lockoptions.define("maxwait", casacore::Int(lock.maxWait()));
-      return std::make_shared<TableProxy>(name, lockoptions, Table::Old);
+      auto proxy = std::make_shared<TableProxy>(name, lockoptions, Table::Old);
+      if (weak_proxy) *weak_proxy = proxy;
+      return proxy;
     });
   }
 };
+
+// Generous upper bound on operations that should complete immediately.
+// Exceeding it means a deadlock, so the tests fail instead of hanging
+static constexpr double kTeardownTimeout = 30.0;
+
+// Poll until the proxy expires. Teardown of an IsolatedTableProxy hands its
+// I/O pools to another thread, so it does not complete synchronously
+bool WaitForExpiry(const std::weak_ptr<TableProxy>& proxy,
+                   double seconds = kTeardownTimeout) {
+  auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::duration<double>(seconds);
+
+  while (!proxy.expired()) {
+    if (std::chrono::steady_clock::now() > deadline) return false;
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+
+  return true;
+}
 
 TEST_F(IsolatedTableProxyTest, MakeTable) {
   ASSERT_OK_AND_ASSIGN(
@@ -149,6 +176,44 @@ TEST_F(IsolatedTableProxyTest, FailIfClosed) {
   ASSERT_NOT_OK(itp->RunSync([](const TableProxy& tp) { return true; }));
   ASSERT_OK_AND_ASSIGN(close_result, itp->Close());
   EXPECT_EQ(close_result, false);
+}
+
+// Close() submits the close to the isolation pool and waits for it. On the
+// isolation thread itself, that waits for a task that only the waiting thread
+// could ever run
+TEST_F(IsolatedTableProxyTest, CloseFromIsolationThread) {
+  ASSERT_OK_AND_ASSIGN(auto itp, OpenTable());
+  // No lock: the task closes the table, so there is nothing left to unlock
+  auto fut = itp->RunAsync([itp](const TableProxy&) { return itp->Close(); },
+                           CasaLockType::None);
+  ASSERT_TRUE(fut.Wait(kTeardownTimeout))
+      << "Close() deadlocked on its own isolation thread";
+  ASSERT_OK_AND_ASSIGN(auto closed, fut.MoveResult());
+  EXPECT_TRUE(closed);
+  EXPECT_TRUE(itp->IsClosed());
+}
+
+// The read and write callbacks hold a reference to the proxy and are destroyed
+// on an isolation thread once their pipeline completes, so the last reference
+// is routinely released there. Destruction must still close the table, which
+// means neither closing it nor destroying the I/O pools may block that thread
+TEST_F(IsolatedTableProxyTest, DestroyOnIsolationThread) {
+  std::weak_ptr<TableProxy> weak_proxy;
+
+  {
+    ASSERT_OK_AND_ASSIGN(auto itp, OpenTable(&weak_proxy));
+    ASSERT_FALSE(weak_proxy.expired());
+
+    // The functor owns the only remaining reference and is destroyed on the
+    // isolation thread when the task completes
+    auto fut = itp->RunAsync([itp](const TableProxy& tp) { return tp.table().nrow(); });
+    itp.reset();
+    ASSERT_OK_AND_ASSIGN(auto nrow, fut.MoveResult());
+    EXPECT_EQ(nrow, knrow);
+  }
+
+  EXPECT_TRUE(WaitForExpiry(weak_proxy))
+      << "Table was never closed: teardown deadlocked on its isolation thread";
 }
 
 }  // namespace

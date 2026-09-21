@@ -4,6 +4,8 @@ History
 
 X.Y.Z (DD-MM-YYYY)
 ------------------
+* Restore macOS CI build times by dropping Homebrew ``llvm`` and pinning the
+  Fortran compiler to ``gcc@15`` (:pr:`236`)
 * Hoist ``build_selection`` local declarations to fix Cython 3.2 redeclaration errors (:pr:`229`)
 
 0.5.4 (22-07-2026)

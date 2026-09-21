@@ -8,7 +8,7 @@ def test_descriptor_basic():
     assert isinstance(ms_descriptor("ANTENNA"), dict)
     assert isinstance(ms_descriptor("FEED"), dict)
     assert isinstance(ms_descriptor("SPECTRAL_WINDOW"), dict)
-    assert isinstance(ms_descriptor("PHASED_ARRAY"), dict)
+    assert isinstance(ms_descriptor("MSV3_PHASED_ARRAY"), dict)
 
 
 def test_ms_addrows(tmp_path_factory):
@@ -85,20 +85,21 @@ def test_phased_array_subtable_creation(tmp_path_factory):
     with Table.ms_from_descriptor(str(ms)):
         pass
 
-    phased_desc = ms_descriptor("PHASED_ARRAY", complete=False)
-    with Table.ms_from_descriptor(str(ms), "PHASED_ARRAY", phased_desc) as phased:
+    phased_desc = ms_descriptor("MSV3_PHASED_ARRAY", complete=False)
+    with Table.ms_from_descriptor(str(ms), "MSV3_PHASED_ARRAY", phased_desc) as phased:
         phased.addrows(1)
         assert phased.nrow() == 1
 
     with Table.from_filename(str(ms)) as main:
         assert "PHASED_ARRAY" in main.tabledesc()["_keywords_"]
+        assert main.tabledesc()["_keywords_"]["PHASED_ARRAY"] == f"Table: {ms}/PHASED_ARRAY"
 
     with Table.from_filename(f"{ms}::PHASED_ARRAY") as phased:
         assert phased.nrow() == 1
 
 
 def test_phased_array_subtable_descriptor():
-    assert ms_descriptor("PHASED_ARRAY", complete=True) == {
+    assert ms_descriptor("MSV3_PHASED_ARRAY", complete=True) == {
         "ANTENNA_ID": {
             "comment": "Antenna ID",
             "dataManagerGroup": "StandardStMan",

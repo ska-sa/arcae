@@ -84,7 +84,7 @@ static constexpr char kFlagCmd[] = "FLAG_CMD";
 static constexpr char kFreqOffset[] = "FREQ_OFFSET";
 static constexpr char kHistory[] = "HISTORY";
 static constexpr char kObservation[] = "OBSERVATION";
-static constexpr char kPhasedArray[] = "PHASED_ARRAY";
+static constexpr char kMSV3PhasedArray[] = "MSV3_PHASED_ARRAY";
 static constexpr char kPointing[] = "POINTING";
 static constexpr char kPolarization[] = "POLARIZATION";
 static constexpr char kProcessor[] = "PROCESSOR";
@@ -241,7 +241,7 @@ Result<TableDesc> MSTableDescriptor(const String& table, bool complete) {
     return MSSubtableDesc<MSHistory>(complete);
   } else if (table_ == kObservation) {
     return MSSubtableDesc<MSObservation>(complete);
-  } else if (table_ == kPhasedArray) {
+  } else if (table_ == kMSV3PhasedArray) {
     return PhasedArrayMSDesc(complete);
   } else if (table_ == kPointing) {
     return MSSubtableDesc<MSPointing>(complete);

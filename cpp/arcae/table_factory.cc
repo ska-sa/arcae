@@ -101,8 +101,8 @@ Result<std::shared_ptr<NewTableProxy>> DefaultMS(const std::string& name,
   std::transform(std::begin(subtable), std::end(subtable), std::begin(usubtable),
                  [](unsigned char c) { return std::toupper(c); });
 
-  auto physical_subtable = usubtable == kMSV3PhasedArray ? casacore::String(kPhasedArray)
-                                                          : usubtable;
+  auto physical_subtable =
+      usubtable == kMSV3PhasedArray ? casacore::String(kPhasedArray) : usubtable;
   auto modname = name.empty() ? "measurementset.ms"s : name;
 
   // Subtables are relative to the MS name

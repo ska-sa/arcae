@@ -33,13 +33,13 @@
 
 using ::arrow::Result;
 
-using ::casacore::JsonOut;
-using ::casacore::JsonParser;
 using ::casacore::ArrayColumnDesc;
 using ::casacore::Bool;
 using ::casacore::Double;
-using ::casacore::IPosition;
 using ::casacore::Int;
+using ::casacore::IPosition;
+using ::casacore::JsonOut;
+using ::casacore::JsonParser;
 using ::casacore::ScalarColumnDesc;
 using ::casacore::String;
 using ::casacore::Vector;
@@ -179,14 +179,12 @@ void AddMeasureMetadata(TableDesc& td, const String& column, const String& type,
 TableDesc PhasedArrayMSDesc(bool complete) {
   TableDesc td;
   td.addColumn(ScalarColumnDesc<Int>("ANTENNA_ID", "Antenna ID"));
-  td.addColumn(ArrayColumnDesc<Double>(
-      "POSITION", "Position of antenna field", IPosition({3})));
-  td.addColumn(ArrayColumnDesc<Double>(
-      "COORDINATE_AXES", "Local coordinate system", IPosition({3, 3})));
-  td.addColumn(ArrayColumnDesc<Double>(
-      "ELEMENT_OFFSET", "Offset per element", 2));
-  td.addColumn(ArrayColumnDesc<Bool>(
-      "ELEMENT_FLAG", "Flag of elements in array", 2));
+  td.addColumn(
+      ArrayColumnDesc<Double>("POSITION", "Position of antenna field", IPosition({3})));
+  td.addColumn(ArrayColumnDesc<Double>("COORDINATE_AXES", "Local coordinate system",
+                                       IPosition({3, 3})));
+  td.addColumn(ArrayColumnDesc<Double>("ELEMENT_OFFSET", "Offset per element", 2));
+  td.addColumn(ArrayColumnDesc<Bool>("ELEMENT_FLAG", "Flag of elements in array", 2));
 
   AddMeasureMetadata(td, "POSITION", "position", "ITRF", "m");
   AddMeasureMetadata(td, "ELEMENT_OFFSET", "position", "ITRF", "m");

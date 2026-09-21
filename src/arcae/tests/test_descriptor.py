@@ -92,7 +92,10 @@ def test_phased_array_subtable_creation(tmp_path_factory):
 
     with Table.from_filename(str(ms)) as main:
         assert "PHASED_ARRAY" in main.tabledesc()["_keywords_"]
-        assert main.tabledesc()["_keywords_"]["PHASED_ARRAY"] == f"Table: {ms}/PHASED_ARRAY"
+        assert (
+            main.tabledesc()["_keywords_"]["PHASED_ARRAY"]
+            == f"Table: {ms}/PHASED_ARRAY"
+        )
 
     with Table.from_filename(f"{ms}::PHASED_ARRAY") as phased:
         assert phased.nrow() == 1

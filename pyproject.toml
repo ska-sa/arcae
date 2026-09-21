@@ -77,12 +77,6 @@ auditwheel repair \
 [tool.cibuildwheel.macos]
 before-all = "{package}/ci/scripts/before-all-macos.sh"
 
-before-build = """
-export PATH="/opt/homebrew/opt/llvm/bin:$PATH"
-export LDFLAGS="-L/opt/homebrew/opt/llvm/lib"
-export CPPFLAGS="-I/opt/homebrew/opt/llvm/include"
-"""
-
 repair-wheel-command = """
 DYLD_LIBRARY_PATH=$LD_LIBRARY_PATH delocate-listdeps {wheel}
 DYLD_LIBRARY_PATH=$LD_LIBRARY_PATH delocate-wheel \

@@ -354,12 +354,27 @@ def test_getcol(getcol_table):
 @pytest.mark.parametrize(
     "col, row, cell_index, expected",
     [
-        ("FLOAT_DATA", 1, (slice(0, 2), slice(0, 4)), np.full((2, 4), 1, dtype=np.float32)),
+        (
+            "FLOAT_DATA",
+            1,
+            (slice(0, 2), slice(0, 4)),
+            np.full((2, 4), 1, dtype=np.float32),
+        ),
         ("FLOAT_DATA", 2, (slice(0, 2), slice(1, 4, 2)), [[2, 2], [2, 2]]),
-        ("COMPLEX_DATA", 2, (slice(0, 2), slice(0, 2)), np.full((2, 2), 2 + 2j, dtype=np.complex128)),
+        (
+            "COMPLEX_DATA",
+            2,
+            (slice(0, 2), slice(0, 2)),
+            np.full((2, 2), 2 + 2j, dtype=np.complex128),
+        ),
         ("FLAG", 0, (slice(0, 1), slice(0, 4)), np.full((1, 4), 1, dtype=np.uint8)),
         ("NESTED_STRING", 1, (slice(0, 2), slice(0, 2)), [["1", "1"], ["1", "1"]]),
-        ("VARDATA", 2, (slice(0, 2), slice(0, 2)), np.full((2, 2), 2 + 0j, dtype=np.complex128)),
+        (
+            "VARDATA",
+            2,
+            (slice(0, 2), slice(0, 2)),
+            np.full((2, 2), 2 + 0j, dtype=np.complex128),
+        ),
     ],
 )
 def test_getcol_single_row_cell_slice(getcol_table, col, row, cell_index, expected):
@@ -374,6 +389,7 @@ def test_getcol_single_row_cell_slice(getcol_table, col, row, cell_index, expect
 def test_putcol_single_row_cell_slice(tmp_path):
     """Test putcol and getcol roundtrip for single-row cell slices."""
     from arcae.lib.arrow_tables import Table, ms_descriptor
+
     ms = str(tmp_path / "test_putcol_cellslice.ms")
     table_desc = ms_descriptor("MAIN", complete=False)
     table_desc["DATA"] = {
@@ -397,13 +413,17 @@ def test_putcol_single_row_cell_slice(tmp_path):
         T.putcol("DATA", slice_val[None, ...], index=([0], slice(1, 3), slice(1, 3)))
 
         # Read back via getcol
-        read_back = T.getcol("DATA", index=([0], slice(1, 3), slice(1, 3))).squeeze(axis=0)
+        read_back = T.getcol("DATA", index=([0], slice(1, 3), slice(1, 3))).squeeze(
+            axis=0
+        )
         assert_array_equal(read_back, slice_val)
 
         # Write slice into row 1 using single-row cell indexing
         slice_val2 = np.ones((2, 3), dtype=np.float32) * 99.0
         T.putcol("DATA", slice_val2[None, ...], index=([1], slice(0, 2), slice(1, 4)))
-        read_back2 = T.getcol("DATA", index=([1], slice(0, 2), slice(1, 4))).squeeze(axis=0)
+        read_back2 = T.getcol("DATA", index=([1], slice(0, 2), slice(1, 4))).squeeze(
+            axis=0
+        )
         assert_array_equal(read_back2, slice_val2)
 
 

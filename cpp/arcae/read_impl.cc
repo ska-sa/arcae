@@ -117,7 +117,8 @@ struct ReadCallback {
         auto column = ArrayColumn<CT>(tp.table(), column_name);
         auto ref_rows = chunk.ReferenceRows();
         if (ref_rows.nrows() == 1) {
-          auto data = CasaArray<CT>(chunk.SectionSlicer().length(), out_ptr, casacore::SHARE);
+          auto data =
+              CasaArray<CT>(chunk.SectionSlicer().length(), out_ptr, casacore::SHARE);
           column.getSlice(ref_rows.firstRow(), chunk.SectionSlicer(), data);
           return true;
         }

@@ -93,7 +93,8 @@ struct WriteCallback {
         auto column = ArrayColumn<CT>(tp.table(), column_name);
         auto ref_rows = chunk.ReferenceRows();
         if (ref_rows.nrows() == 1) {
-          auto array = CasaArray<CT>(chunk.SectionSlicer().length(), in_ptr, casacore::SHARE);
+          auto array =
+              CasaArray<CT>(chunk.SectionSlicer().length(), in_ptr, casacore::SHARE);
           column.putSlice(ref_rows.firstRow(), chunk.SectionSlicer(), array);
           return true;
         }
@@ -156,8 +157,7 @@ struct WriteCallback {
                                          data.reform(chunk.SectionSlicer().length()));
                          return true;
                        }
-                       column.putColumnCells(ref_rows, chunk.SectionSlicer(),
-                                             data);
+                       column.putColumnCells(ref_rows, chunk.SectionSlicer(), data);
                        return true;
                      });
   }

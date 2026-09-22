@@ -7,7 +7,6 @@ import cython
 import json
 from typing import Any, Dict, List, Union
 
-from libc.stdint cimport int64_t
 from libcpp cimport bool
 from libcpp.memory cimport shared_ptr
 from libcpp.string cimport string

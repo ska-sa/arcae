@@ -46,6 +46,10 @@ add_executable(cache_size_test cache_size_test.cc)
 target_link_libraries(cache_size_test PRIVATE GTest::gtest_main arcae test_utils)
 add_test(cache_size_test cache_size_test)
 
+add_executable(slice_shape_test slice_shape_test.cc)
+target_link_libraries(slice_shape_test PRIVATE GTest::gtest_main arcae test_utils)
+add_test(slice_shape_test slice_shape_test)
+
 set_tests_properties(result_shape_test
                      cache_size_test
                      data_partition_test
@@ -54,4 +58,5 @@ set_tests_properties(result_shape_test
                      new_table_proxy_test
                      parallel_write_test
                      selection_test
+                     slice_shape_test
                      PROPERTIES ENVIRONMENT "LD_LIBRARY_PATH=${VCPKG_LIBDIRS}")

@@ -4,6 +4,8 @@ History
 
 X.Y.Z (DD-MM-YYYY)
 ------------------
+* Reject slices that ``Selection`` cannot represent, and test the
+  ``getSlice``/``putSlice`` array shape contract (:pr:`239`)
 * Add `AGENTS.md` and a design document for the write-support branch (:pr:`238`)
 * Add GetCellSlice to support slicing single cells in array columns (:pr:`233`)
 * Add support for ``PHASED_ARRAY`` subtable (:pr:`234`)

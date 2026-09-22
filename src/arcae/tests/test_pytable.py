@@ -386,6 +386,51 @@ def test_getcol_single_row_cell_slice(getcol_table, col, row, cell_index, expect
         assert np.iscomplexobj(result)
 
 
+@pytest.mark.parametrize(
+    "cell_index, match",
+    [
+        # Unbounded stops cannot be resolved without the dimension extent
+        ((slice(0, 2), slice(2, None)), "has no stop"),
+        ((slice(None, None, 2), slice(0, 4)), "has no stop"),
+        # Negative bounds mean null indices in arcae, not offsets from the end
+        ((slice(0, 2), slice(-3, 4)), "negative bounds"),
+        # An empty selection is indistinguishable from an absent one
+        ((slice(0, 2), slice(2, 2)), "is empty"),
+        ((slice(0, 2), slice(3, 1)), "is empty"),
+        # Only forward steps are representable
+        ((slice(0, 2), slice(4, 0, -1)), "step must be positive"),
+    ],
+)
+def test_getcol_unsupported_slices(getcol_table, cell_index, match):
+    """Slices arcae cannot represent raise instead of silently mis-selecting."""
+    T = arcae.table(getcol_table, readonly=True)
+    with pytest.raises(ValueError, match=match):
+        T.getcol("FLOAT_DATA", index=([1],) + cell_index)
+
+
+def test_getcol_slice_start_defaults_to_zero(getcol_table):
+    """An unbounded slice start is equivalent to starting at zero."""
+    T = arcae.table(getcol_table, readonly=True)
+    expected = T.getcol("FLOAT_DATA", index=([1], slice(0, 2), slice(0, 4)))
+    assert_array_equal(
+        T.getcol("FLOAT_DATA", index=([1], slice(None, 2), slice(0, 4))), expected
+    )
+
+
+def test_getcol_strided_cell_slice_matches_numpy(getcol_table):
+    """Strided cell slices agree with the equivalent numpy selection."""
+    T = arcae.table(getcol_table, readonly=True)
+    full = T.getcol("FLOAT_DATA")
+    for cell_index in [
+        (slice(0, 2), slice(0, 4, 2)),
+        (slice(0, 2, 2), slice(1, 4, 2)),
+        (slice(0, 2), slice(0, 4, 3)),
+        (slice(0, 2), slice(0, 4, 99)),
+    ]:
+        strided = T.getcol("FLOAT_DATA", index=([1],) + cell_index)
+        assert_array_equal(strided, full[(slice(1, 2),) + cell_index])
+
+
 def test_putcol_single_row_cell_slice(tmp_path):
     """Test putcol and getcol roundtrip for single-row cell slices."""
     from arcae.lib.arrow_tables import Table, ms_descriptor

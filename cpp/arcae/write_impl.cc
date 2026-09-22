@@ -81,24 +81,29 @@ struct WriteCallback {
     // If the chunk is contiguous in memory, we can write
     // from a CASA Array view over that position in the buffer
     if (chunk.IsContiguous()) {
-      return itp->RunAsync(
-          [column_name = std::move(column), chunk = chunk,
-           buffer = buffer](const TableProxy& tp) -> bool {
-            CT* in_ptr = const_cast<CT*>(buffer->template data_as<CT>());
-            in_ptr += chunk.FlatOffset();
-            auto shape = chunk.GetShape();
-            if (shape.size() == 1) {
-              auto column = ScalarColumn<CT>(tp.table(), column_name);
-              auto vector = CasaVector<CT>(shape, in_ptr, casacore::SHARE);
-              column.putColumnCells(chunk.ReferenceRows(), vector);
-              return true;
-            }
-            auto column = ArrayColumn<CT>(tp.table(), column_name);
-            auto array = CasaArray<CT>(shape, in_ptr, casacore::SHARE);
-            column.putColumnCells(chunk.ReferenceRows(), chunk.SectionSlicer(), array);
-            return true;
-          },
-          LockType::Write);
+      return itp->RunAsync([column_name = std::move(column), chunk = chunk,
+                            buffer = buffer](const TableProxy& tp) -> bool {
+        CT* in_ptr = const_cast<CT*>(buffer->template data_as<CT>());
+        in_ptr += chunk.FlatOffset();
+        auto shape = chunk.GetShape();
+        if (shape.size() == 1) {
+          auto column = ScalarColumn<CT>(tp.table(), column_name);
+          auto vector = CasaVector<CT>(shape, in_ptr, casacore::SHARE);
+          column.putColumnCells(chunk.ReferenceRows(), vector);
+          return true;
+        }
+        auto column = ArrayColumn<CT>(tp.table(), column_name);
+        auto ref_rows = chunk.ReferenceRows();
+        if (ref_rows.nrows() == 1) {
+          auto array =
+              CasaArray<CT>(chunk.SectionSlicer().length(), in_ptr, casacore::SHARE);
+          column.putSlice(ref_rows.firstRow(), chunk.SectionSlicer(), array);
+          return true;
+        }
+        auto array = CasaArray<CT>(shape, in_ptr, casacore::SHARE);
+        column.putColumnCells(ref_rows, chunk.SectionSlicer(), array);
+        return true;
+      });
     }
 
     // Transpose the array into the output buffer
@@ -139,20 +144,24 @@ struct WriteCallback {
           return array;
         }));
 
-    return itp->Then(
-        transpose_fut,
-        [column_name = std::move(column), chunk = chunk](const CasaArray<CT>& data,
-                                                         const TableProxy& tp) -> bool {
-          if (chunk.nDim() == 1) {
-            auto column = ScalarColumn<CT>(tp.table(), column_name);
-            column.putColumnCells(chunk.ReferenceRows(), data);
-            return true;
-          }
-          auto column = ArrayColumn<CT>(tp.table(), column_name);
-          column.putColumnCells(chunk.ReferenceRows(), chunk.SectionSlicer(), data);
-          return true;
-        },
-        LockType::Write);
+    return itp->Then(transpose_fut,
+                     [column_name = std::move(column), chunk = chunk](
+                         const CasaArray<CT>& data, const TableProxy& tp) -> bool {
+                       if (chunk.nDim() == 1) {
+                         auto column = ScalarColumn<CT>(tp.table(), column_name);
+                         column.putColumnCells(chunk.ReferenceRows(), data);
+                         return true;
+                       }
+                       auto column = ArrayColumn<CT>(tp.table(), column_name);
+                       auto ref_rows = chunk.ReferenceRows();
+                       if (ref_rows.nrows() == 1) {
+                         column.putSlice(ref_rows.firstRow(), chunk.SectionSlicer(),
+                                         data.reform(chunk.SectionSlicer().length()));
+                         return true;
+                       }
+                       column.putColumnCells(ref_rows, chunk.SectionSlicer(), data);
+                       return true;
+                     });
   }
 
   // Write a chunk of data from the encapsulated buffer

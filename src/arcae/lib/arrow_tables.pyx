@@ -69,6 +69,8 @@ cdef CSelection build_selection(index: FullIndex = None):
     cdef CSelectionBuilder builder = CSelectionBuilder().Order(b"C")
     cdef IndexType start
     cdef IndexType stop
+    cdef IndexType step
+    cdef IndexType count
     cdef IndexType i
     cdef Index vec_index
     cdef IndexType[:] dim_array_view
@@ -89,17 +91,48 @@ cdef CSelection build_selection(index: FullIndex = None):
                 continue
 
             # Convert a slice object into a vector, and then a span of RowId
-            if dim_index.step is not None and dim_index.step != 1:
-                raise ValueError(f"slice step {dim_index.step} is not 1")
+            step = 1 if dim_index.step is None else dim_index.step
+            if step <= 0:
+                raise ValueError(f"slice step must be positive, got {step}")
 
-            start = dim_index.start
+            # A selection is built without knowledge of the column, so an
+            # unbounded stop cannot be resolved to the dimension extent.
+            if dim_index.stop is None:
+                raise ValueError(
+                    f"slice {dim_index!r} in dimension {d} has no stop. "
+                    f"arcae builds selections without knowing the extent of "
+                    f"each dimension, so an unbounded stop cannot be resolved. "
+                    f"Supply an explicit stop, or use slice(None) to select "
+                    f"the entire dimension")
+
+            # An unbounded start is unambiguously the start of the dimension
+            start = 0 if dim_index.start is None else dim_index.start
             stop = dim_index.stop
 
-            with nogil:
-                vec_index = Index(stop - start, 0)
+            # Negative bounds would be silently interpreted as the null/missing
+            # row indices that array indices use, rather than as Python's
+            # index-from-the-end semantics
+            if start < 0 or stop < 0:
+                raise ValueError(
+                    f"slice {dim_index!r} in dimension {d} has negative bounds. "
+                    f"arcae does not support negative slice bounds, as negative "
+                    f"indices denote null values rather than an offset from the "
+                    f"end of the dimension")
 
-                for i in range(stop - start):
-                    vec_index[i] = start + i
+            # An empty selection is indistinguishable from an absent one, and
+            # would silently select the entire dimension
+            if stop <= start:
+                raise ValueError(
+                    f"slice {dim_index!r} in dimension {d} is empty. "
+                    f"arcae cannot represent an empty selection, as it is "
+                    f"indistinguishable from selecting the entire dimension")
+
+            with nogil:
+                count = (stop - start + step - 1) // step
+                vec_index = Index(count, 0)
+
+                for i in range(count):
+                    vec_index[i] = start + i * step
 
                 builder.Add(move(vec_index))
         elif isinstance(dim_index, list):

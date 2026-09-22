@@ -64,6 +64,8 @@ namespace {
 
 /// Table and subtable names
 static constexpr char kMain[] = "MAIN";
+static constexpr char kMSV3PhasedArray[] = "MSV3_PHASED_ARRAY";
+static constexpr char kPhasedArray[] = "PHASED_ARRAY";
 
 // arcae confines each casacore Table to its own thread and acquires/releases a
 // lock around every operation (see IsolatedTableProxy::MaybeLockAndFinalise).
@@ -111,12 +113,14 @@ Result<std::shared_ptr<NewTableProxy>> DefaultMS(const std::string& name,
   std::transform(std::begin(subtable), std::end(subtable), std::begin(usubtable),
                  [](unsigned char c) { return std::toupper(c); });
 
+  auto physical_subtable =
+      usubtable == kMSV3PhasedArray ? casacore::String(kPhasedArray) : usubtable;
   auto modname = name.empty() ? "measurementset.ms"s : name;
 
   // Subtables are relative to the MS name
-  if (usubtable != kMain) {
+  if (physical_subtable != kMain) {
     modname.append(1, '/');
-    modname.append(usubtable);
+    modname.append(physical_subtable);
   }
 
   ARROW_ASSIGN_OR_RAISE(auto cache_spec, detail::ParseCacheSizeSpec(json_cache_size));
@@ -171,6 +175,8 @@ Result<std::shared_ptr<NewTableProxy>> DefaultMS(const std::string& name,
       subtable = std::make_shared<TableProxy>(MSHistory(setup_new_table));
     } else if (usubtable == MS::keywordName(MS::OBSERVATION)) {
       subtable = std::make_shared<TableProxy>(MSObservation(setup_new_table));
+    } else if (usubtable == kMSV3PhasedArray) {
+      subtable = std::make_shared<TableProxy>(Table(setup_new_table));
     } else if (usubtable == MS::keywordName(MS::POINTING)) {
       subtable = std::make_shared<TableProxy>(MSPointing(setup_new_table));
     } else if (usubtable == MS::keywordName(MS::POLARIZATION)) {
@@ -190,11 +196,11 @@ Result<std::shared_ptr<NewTableProxy>> DefaultMS(const std::string& name,
     }
 
     if (!subtable) {
-      return arrow::Status::Invalid("Uknown table type: ", usubtable);
+      return arrow::Status::Invalid("Unknown table type: ", usubtable);
     }
 
     // Link the table against the Measurement Set
-    ms.rwKeywordSet().defineTable(usubtable, subtable->table());
+    ms.rwKeywordSet().defineTable(physical_subtable, subtable->table());
     ARROW_RETURN_NOT_OK(detail::ApplyCacheSizes(*subtable, cache_spec));
     return subtable;
   };

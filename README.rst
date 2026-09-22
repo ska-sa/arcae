@@ -29,6 +29,48 @@ In the time since the CTDS was developed, newer, open-source formats such as Apa
 * Access to non thread-safe CASA Tables is constrained to a ThreadPool containing a single thread
 * It also allows us to write astrometry routines in C++, potentially side-stepping thread-safety and GIL issues with the CASA Measures server.
 
+
+Design
+------
+
+arcae aims to achieve high throughput to the underlying CTDS.
+Like ``python-casacore`` it wraps the foundational ``casacore`` library,
+but as ``casacore`` is not thread-safe as of version 3.8.1:
+only a single I/O operation to a table can take place at once, per process.
+
+arcae's central strategy for increasing throughput in a process involves opening multiple instances of the same table
+so that a request can be issued per instance, in separate threads. This is highly dangerous on a stock ``casacore``
+install as opening a casacore Table `delegates <https://github.com/casacore/casacore/blob/5420b48e8acac24e70931a0f1646a6f247c07544/tables/Tables/Table.cc#L434>`_
+to `PlainTable::lookCache <https://github.com/casacore/casacore/blob/5420b48e8acac24e70931a0f1646a6f247c07544/tables/Tables/TableCache.cc#L167-L196>`_ which
+in turn accesses the statically defined `PlainTable::theirTableCache <https://github.com/casacore/casacore/blob/5420b48e8acac24e70931a0f1646a6f247c07544/tables/Tables/PlainTable.h#L319_>`_.
+
+  .. code-block:: cpp
+
+    //# cache of open (plain) tables
+    static TableCache theirTableCache;
+
+Opening the same table in multiple threads in the same process resolves to the same object and accessing the same object from
+multiple threads immediately results in race conditions. arcae resolves this by patching ``theirTableCache`` so that it is ``thread_local``.
+
+  .. code-block:: cpp
+
+    //# cache of open (plain) tables
+    thread_local TableCache theirTableCache;
+
+Now, if a thread opens a Table within thread A, it will always resolve to the entry in thread A's ``TableCache``. Crucially, this still does not imply
+that it is safe to retrieve a ``Table`` from thread A's ``TableCache`` and use it thread B: this can still result in race conditions and further
+effort is required to provide thread safety. This is achieved by building a custom `Thread Pool <https://en.wikipedia.org/wiki/Thread_pool_>`_  which manages
+multiple threads: It:
+
+1. Manages the lifetime of a Table instance associated with each thread.
+2. Delegates and isolates table operations to individual threads.
+3. Increases throughput by allowing multiple simultaneous read requests.
+
+Currently tasks are assigned to the thread with the least number of active tasks: better metrics (i.e. I/O operation bytes) could be applied in future.
+
+This is a coarse-grained approach to achieving thread-safety and throughput in casacore. A more involved, fine-grained approach is available in `casacore#1167 <https://github.com/casacore/casacore/pull/1167>`_.
+
+
 Limitations
 -----------
 

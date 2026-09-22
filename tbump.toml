@@ -1,5 +1,5 @@
 [version]
-current = "0.4.0-alpha.9"
+current = "0.4.0-alpha.10"
 # https://semver.org/#spec-item-9
 regex = '''
   (?P<major>\d+)

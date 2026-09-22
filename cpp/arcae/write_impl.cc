@@ -91,8 +91,14 @@ struct WriteCallback {
           return true;
         }
         auto column = ArrayColumn<CT>(tp.table(), column_name);
+        auto ref_rows = chunk.ReferenceRows();
+        if (ref_rows.nrows() == 1) {
+          auto array = CasaArray<CT>(chunk.SectionSlicer().length(), in_ptr, casacore::SHARE);
+          column.putSlice(ref_rows.firstRow(), chunk.SectionSlicer(), array);
+          return true;
+        }
         auto array = CasaArray<CT>(shape, in_ptr, casacore::SHARE);
-        column.putColumnCells(chunk.ReferenceRows(), chunk.SectionSlicer(), array);
+        column.putColumnCells(ref_rows, chunk.SectionSlicer(), array);
         return true;
       });
     }
@@ -144,7 +150,13 @@ struct WriteCallback {
                          return true;
                        }
                        auto column = ArrayColumn<CT>(tp.table(), column_name);
-                       column.putColumnCells(chunk.ReferenceRows(), chunk.SectionSlicer(),
+                       auto ref_rows = chunk.ReferenceRows();
+                       if (ref_rows.nrows() == 1) {
+                         column.putSlice(ref_rows.firstRow(), chunk.SectionSlicer(),
+                                         data.reform(chunk.SectionSlicer().length()));
+                         return true;
+                       }
+                       column.putColumnCells(ref_rows, chunk.SectionSlicer(),
                                              data);
                        return true;
                      });

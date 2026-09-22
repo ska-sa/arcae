@@ -7,6 +7,7 @@ import cython
 import json
 from typing import Any, Dict, List, Union
 
+from libc.stdint cimport int64_t
 from libcpp cimport bool
 from libcpp.memory cimport shared_ptr
 from libcpp.string cimport string
@@ -68,6 +69,8 @@ cdef CSelection build_selection(index: FullIndex = None):
     cdef CSelectionBuilder builder = CSelectionBuilder().Order(b"C")
     cdef IndexType start
     cdef IndexType stop
+    cdef IndexType step
+    cdef IndexType count
     cdef IndexType i
     cdef Index vec_index
     cdef IndexType[:] dim_array_view
@@ -88,17 +91,22 @@ cdef CSelection build_selection(index: FullIndex = None):
                 continue
 
             # Convert a slice object into a vector, and then a span of RowId
-            if dim_index.step is not None and dim_index.step != 1:
-                raise ValueError(f"slice step {dim_index.step} is not 1")
+            step = 1 if dim_index.step is None else dim_index.step
+            if step <= 0:
+                raise ValueError(f"slice step must be positive, got {step}")
 
             start = dim_index.start
             stop = dim_index.stop
 
             with nogil:
-                vec_index = Index(stop - start, 0)
+                if stop > start:
+                    count = (stop - start + step - 1) // step
+                else:
+                    count = 0
+                vec_index = Index(count, 0)
 
-                for i in range(stop - start):
-                    vec_index[i] = start + i
+                for i in range(count):
+                    vec_index[i] = start + i * step
 
                 builder.Add(move(vec_index))
         elif isinstance(dim_index, list):

@@ -115,8 +115,14 @@ struct ReadCallback {
           return true;
         }
         auto column = ArrayColumn<CT>(tp.table(), column_name);
+        auto ref_rows = chunk.ReferenceRows();
+        if (ref_rows.nrows() == 1) {
+          auto data = CasaArray<CT>(chunk.SectionSlicer().length(), out_ptr, casacore::SHARE);
+          column.getSlice(ref_rows.firstRow(), chunk.SectionSlicer(), data);
+          return true;
+        }
         auto data = CasaArray<CT>(chunk.GetShape(), out_ptr, casacore::SHARE);
-        column.getColumnCells(chunk.ReferenceRows(), chunk.SectionSlicer(), data);
+        column.getColumnCells(ref_rows, chunk.SectionSlicer(), data);
         return true;
       });
     }
@@ -129,7 +135,12 @@ struct ReadCallback {
         return column.getColumnCells(chunk.ReferenceRows());
       }
       auto column = ArrayColumn<CT>(tp.table(), column_name);
-      return column.getColumnCells(chunk.ReferenceRows(), chunk.SectionSlicer());
+      auto ref_rows = chunk.ReferenceRows();
+      if (ref_rows.nrows() == 1) {
+        return column.getSlice(ref_rows.firstRow(), chunk.SectionSlicer())
+            .reform(chunk.GetShape());
+      }
+      return column.getColumnCells(ref_rows, chunk.SectionSlicer());
     });
 
     // Transpose the array into the output buffer

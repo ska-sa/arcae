@@ -351,6 +351,62 @@ def test_getcol(getcol_table):
         T.getcol("NONEXISTENT")
 
 
+@pytest.mark.parametrize(
+    "col, row, cell_index, expected",
+    [
+        ("FLOAT_DATA", 1, (slice(0, 2), slice(0, 4)), np.full((2, 4), 1, dtype=np.float32)),
+        ("FLOAT_DATA", 2, (slice(0, 2), slice(1, 4, 2)), [[2, 2], [2, 2]]),
+        ("COMPLEX_DATA", 2, (slice(0, 2), slice(0, 2)), np.full((2, 2), 2 + 2j, dtype=np.complex128)),
+        ("FLAG", 0, (slice(0, 1), slice(0, 4)), np.full((1, 4), 1, dtype=np.uint8)),
+        ("NESTED_STRING", 1, (slice(0, 2), slice(0, 2)), [["1", "1"], ["1", "1"]]),
+        ("VARDATA", 2, (slice(0, 2), slice(0, 2)), np.full((2, 2), 2 + 0j, dtype=np.complex128)),
+    ],
+)
+def test_getcol_single_row_cell_slice(getcol_table, col, row, cell_index, expected):
+    """Test getcol with single-row multi-dimensional cell indexing."""
+    T = arcae.table(getcol_table, readonly=True)
+    result = T.getcol(col, index=([row],) + cell_index).squeeze(axis=0)
+    assert_array_equal(result, expected)
+    if np.iscomplexobj(expected):
+        assert np.iscomplexobj(result)
+
+
+def test_putcol_single_row_cell_slice(tmp_path):
+    """Test putcol and getcol roundtrip for single-row cell slices."""
+    from arcae.lib.arrow_tables import Table, ms_descriptor
+    ms = str(tmp_path / "test_putcol_cellslice.ms")
+    table_desc = ms_descriptor("MAIN", complete=False)
+    table_desc["DATA"] = {
+        "comment": "Data array",
+        "dataManagerGroup": "StandardStMan",
+        "dataManagerType": "StandardStMan",
+        "keywords": {},
+        "ndim": 2,
+        "shape": [4, 4],
+        "maxlen": 0,
+        "option": 0,
+        "valueType": "float",
+    }
+    with Table.ms_from_descriptor(ms, table_desc=table_desc) as T:
+        T.addrows(2)
+        init_data = np.zeros((2, 4, 4), dtype=np.float32)
+        T.putcol("DATA", init_data)
+
+        # Write slice into row 0 using getcol/putcol single-row cell indexing
+        slice_val = np.ones((2, 2), dtype=np.float32) * 42.0
+        T.putcol("DATA", slice_val[None, ...], index=([0], slice(1, 3), slice(1, 3)))
+
+        # Read back via getcol
+        read_back = T.getcol("DATA", index=([0], slice(1, 3), slice(1, 3))).squeeze(axis=0)
+        assert_array_equal(read_back, slice_val)
+
+        # Write slice into row 1 using single-row cell indexing
+        slice_val2 = np.ones((2, 3), dtype=np.float32) * 99.0
+        T.putcol("DATA", slice_val2[None, ...], index=([1], slice(0, 2), slice(1, 4)))
+        read_back2 = T.getcol("DATA", index=([1], slice(0, 2), slice(1, 4))).squeeze(axis=0)
+        assert_array_equal(read_back2, slice_val2)
+
+
 def test_partial_read(sorting_table):
     """Tests that partial reads work"""
     T = arcae.table(sorting_table)

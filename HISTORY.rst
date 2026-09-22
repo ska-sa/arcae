@@ -4,6 +4,7 @@ History
 
 X.Y.Z (DD-MM-YYYY)
 ------------------
+* Add `AGENTS.md` and a design document for the write-support branch (:pr:`238`)
 * Add GetCellSlice to support slicing single cells in array columns (:pr:`233`)
 * Add support for ``PHASED_ARRAY`` subtable (:pr:`234`)
 * Release table resources when the last reference is dropped on an

@@ -94,14 +94,40 @@ cdef CSelection build_selection(index: FullIndex = None):
             if step <= 0:
                 raise ValueError(f"slice step must be positive, got {step}")
 
-            start = dim_index.start
+            # A selection is built without knowledge of the column, so an
+            # unbounded stop cannot be resolved to the dimension extent.
+            if dim_index.stop is None:
+                raise ValueError(
+                    f"slice {dim_index!r} in dimension {d} has no stop. "
+                    f"arcae builds selections without knowing the extent of "
+                    f"each dimension, so an unbounded stop cannot be resolved. "
+                    f"Supply an explicit stop, or use slice(None) to select "
+                    f"the entire dimension")
+
+            # An unbounded start is unambiguously the start of the dimension
+            start = 0 if dim_index.start is None else dim_index.start
             stop = dim_index.stop
 
+            # Negative bounds would be silently interpreted as the null/missing
+            # row indices that array indices use, rather than as Python's
+            # index-from-the-end semantics
+            if start < 0 or stop < 0:
+                raise ValueError(
+                    f"slice {dim_index!r} in dimension {d} has negative bounds. "
+                    f"arcae does not support negative slice bounds, as negative "
+                    f"indices denote null values rather than an offset from the "
+                    f"end of the dimension")
+
+            # An empty selection is indistinguishable from an absent one, and
+            # would silently select the entire dimension
+            if stop <= start:
+                raise ValueError(
+                    f"slice {dim_index!r} in dimension {d} is empty. "
+                    f"arcae cannot represent an empty selection, as it is "
+                    f"indistinguishable from selecting the entire dimension")
+
             with nogil:
-                if stop > start:
-                    count = (stop - start + step - 1) // step
-                else:
-                    count = 0
+                count = (stop - start + step - 1) // step
                 vec_index = Index(count, 0)
 
                 for i in range(count):

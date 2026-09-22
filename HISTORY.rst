@@ -2,13 +2,19 @@
 History
 =======
 
-X.Y.Z (DD-MM-YYYY)
+0.5.5 (22-09-2026)
 ------------------
+* Reject slices that ``Selection`` cannot represent, and test the
+  ``getSlice``/``putSlice`` array shape contract (:pr:`239`)
+* Add `AGENTS.md` and a design document for the write-support branch (:pr:`238`)
+* Add GetCellSlice to support slicing single cells in array columns (:pr:`233`)
+* Add support for ``PHASED_ARRAY`` subtable (:pr:`234`)
 * Release table resources when the last reference is dropped on an
   isolation thread (:pr:`235`)
 * Restore macOS CI build times by dropping Homebrew ``llvm`` and pinning the
   Fortran compiler to ``gcc@15`` (:pr:`236`)
 * Hoist ``build_selection`` local declarations to fix Cython 3.2 redeclaration errors (:pr:`229`)
+* Add support for PHASED_ARRAY subtable (:pr:`234`)
 
 0.5.4 (22-07-2026)
 ------------------

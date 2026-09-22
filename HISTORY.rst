@@ -4,6 +4,7 @@ History
 
 X.Y.Z (DD-MM-YYYY)
 ------------------
+* Add GetCellSlice to support slicing single cells in array columns (:pr:`233`)
 * Add support for ``PHASED_ARRAY`` subtable (:pr:`234`)
 * Release table resources when the last reference is dropped on an
   isolation thread (:pr:`235`)

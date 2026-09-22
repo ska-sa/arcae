@@ -2,7 +2,7 @@
 History
 =======
 
-X.Y.Z (DD-MM-YYYY)
+0.5.5 (22-09-2026)
 ------------------
 * Reject slices that ``Selection`` cannot represent, and test the
   ``getSlice``/``putSlice`` array shape contract (:pr:`239`)

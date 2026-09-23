@@ -767,3 +767,16 @@ def test_cache_size_validation(tau_ms):
         arcae.table(tau_ms, cache_size={"stman:NoSuchSm": 1})
     with pytest.raises(Exception, match="Unknown column"):
         arcae.table(tau_ms, cache_size={"column:NOSUCHCOLUMN": 1})
+
+
+def test_iswritable(sorting_table):
+    """iswritable() reflects how the table was opened"""
+    assert arcae.table(sorting_table, readonly=True).iswritable() is False
+    assert arcae.table(sorting_table, readonly=False).iswritable() is True
+
+
+def test_iswritable_taql(sorting_table):
+    """A TAQL reference table is not writable"""
+    with arcae.table(sorting_table) as T:
+        with Table.from_taql(f"SELECT TIME FROM {sorting_table}", T) as Q:
+            assert Q.iswritable() is False

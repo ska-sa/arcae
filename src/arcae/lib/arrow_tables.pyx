@@ -191,6 +191,27 @@ def _normalise_cache_size(cache_size: Union[int, dict, None]) -> str:
 
 
 # Create a Cython extension type around the CCasaTable C++ instance
+class _NumpyJsonEncoder(json.JSONEncoder):
+    """Encodes the numpy values that appear in casacore descriptors.
+
+    Table descriptors, data manager info and keywords routinely carry
+    numpy scalars and arrays -- a TiledStMan DEFAULTTILESHAPE, for
+    instance -- which the stdlib encoder cannot serialise.
+    """
+
+    def default(self, obj):
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        if isinstance(obj, np.generic):
+            return obj.item()
+        return super().default(obj)
+
+
+def to_json(obj) -> str:
+    """Serialise obj to JSON, handling numpy values"""
+    return json.dumps(obj, cls=_NumpyJsonEncoder)
+
+
 cdef class Table:
     cdef shared_ptr[CCasaTable] c_table
 
@@ -266,8 +287,8 @@ cdef class Table:
             Table table = Table.__new__(Table)
             string cfilename = tobytes(filename)
             string csubtable = tobytes(subtable)
-        json_table_desc = json.dumps(table_desc) if table_desc else "{}"
-        json_dminfo = json.dumps(dminfo) if dminfo else "{}"
+        json_table_desc = to_json(table_desc) if table_desc else "{}"
+        json_dminfo = to_json(dminfo) if dminfo else "{}"
 
         cjson_table_desc: string = tobytes(json_table_desc)
         cjson_dm_info: string = tobytes(json_dminfo)
@@ -301,8 +322,8 @@ cdef class Table:
             string cfilename = tobytes(filename)
             size_t cninstances = int(ninstances)
             size_t cnrow = int(nrow)
-        json_table_desc = json.dumps(table_desc) if table_desc else "{}"
-        json_dminfo = json.dumps(dminfo) if dminfo else "{}"
+        json_table_desc = to_json(table_desc) if table_desc else "{}"
+        json_dminfo = to_json(dminfo) if dminfo else "{}"
 
         cjson_table_desc: string = tobytes(json_table_desc)
         cjson_dm_info: string = tobytes(json_dminfo)
@@ -562,7 +583,7 @@ cdef class Table:
 
     def _putkeywords(self, keywords: Dict[str, Any], column: str):
         cdef:
-            string cjson_keywords = tobytes(json.dumps(keywords))
+            string cjson_keywords = tobytes(to_json(keywords))
             string ccolumn = tobytes(column)
 
         with nogil:
@@ -588,8 +609,8 @@ cdef class Table:
 
     def addcols(self, columndescs: Dict, dminfo: Dict | None):
         cdef:
-            string cjson_columndescs = tobytes(json.dumps(columndescs))
-            string cjson_dminfo = tobytes(json.dumps(dminfo) if dminfo else "{}")
+            string cjson_columndescs = tobytes(to_json(columndescs))
+            string cjson_dminfo = tobytes(to_json(dminfo) if dminfo else "{}")
 
         with nogil:
             GetResultValue(

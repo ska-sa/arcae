@@ -108,3 +108,34 @@ def test_from_descriptor_bad_descriptor(tmp_path_factory):
 
     with pytest.raises(Exception):
         Table.from_descriptor(path, table_desc={"BAD": {"valueType": "NOSUCHTYPE"}})
+
+
+def test_numpy_values_in_descriptors(tmp_path_factory):
+    """casacore descriptors routinely carry numpy values, which the
+    stdlib JSON encoder cannot serialise"""
+    path = str(tmp_path_factory.mktemp("numpy_desc") / "test.tab")
+    dminfo = {
+        "*1": {
+            "NAME": "DATA_GROUP",
+            "TYPE": "TiledColumnStMan",
+            # DEFAULTTILESHAPE is an int32 array in practice
+            "SPEC": {"DEFAULTTILESHAPE": np.int32([NCORR, NCHAN, 2])},
+            "COLUMNS": ["DATA"],
+        }
+    }
+    table_desc = {
+        "DATA": {**TABLE_DESC["DATA"], "shape": np.int32([NCHAN, NCORR])},
+    }
+
+    with Table.from_descriptor(path, table_desc=table_desc, dminfo=dminfo, nrow=1) as T:
+        group = next(v for v in T.getdminfo().values() if v["NAME"] == "DATA_GROUP")
+        assert group["TYPE"] == "TiledColumnStMan"
+
+
+def test_numpy_values_in_keywords(tmp_path_factory):
+    path = str(tmp_path_factory.mktemp("numpy_kw") / "test.tab")
+    with Table.from_descriptor(path, table_desc=TABLE_DESC, nrow=1) as T:
+        T.putkeywords({"scalar": np.int32(7), "array": np.arange(3, dtype=np.int32)})
+        keywords = T.getkeywords()
+        assert keywords["scalar"] == 7
+        assert list(keywords["array"]) == [0, 1, 2]

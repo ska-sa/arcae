@@ -55,8 +55,52 @@ class IsolatedTableProxy : public std::enable_shared_from_this<IsolatedTableProx
         // the lock was taken. Throwing here is caught by the AipsError
         // handler in the dispatching task and converted to Status::Invalid,
         // so we never run the wrapped functor without a lock.
-        locked = proxy->lock(lock_type == CasaLockType::Write, 0);
+        try {
+          locked = proxy->lock(lock_type == CasaLockType::Write, 0);
+        } catch (...) {
+          // PlainTable::lock can throw with the lock already taken: it syncs
+          // once it has acquired, and a column count mismatch throws from
+          // there -- which is what a reader sees after another handle added
+          // a column (ska-sa/arcae#241). This object is never constructed,
+          // so its destructor will never run and release that lock. Left
+          // held it is held for the life of the process, and since the lock
+          // state is shared process wide, every later writer waits on it.
+          Unlock();
+          throw;
+        }
         if (!locked) throw casacore::AipsError("Failed to acquire table lock");
+
+        if (lock_type == CasaLockType::Read) {
+          // Acquiring a read lock is not enough to see another handle's
+          // writes. casacore resyncs on lock acquisition by way of
+          // ColumnSet::resync(nrow, forceSync=false), which only revisits
+          // data managers whose change counter moved, and that misses
+          // array column storage: a reader observes writes to scalar
+          // columns but keeps returning stale array data indefinitely.
+          // Table::resync() is the forceSync=true path and does see them.
+          //
+          // This matters here in a way it does not for single threaded
+          // casacore users, because arcae's table cache is thread_local:
+          // two handles in one process are genuinely independent tables,
+          // so they take the same code path as two processes.
+          try {
+            proxy->resync();
+          } catch (const casacore::AipsError& e) {
+            // A resync is an optimisation over what the lock already did, so
+            // failing it is not a reason to fail the operation. In
+            // particular, Table::resync always compares the column count and
+            // throws when it differs, while Table::lock only compares it on
+            // the occasions it decides to sync. Adding a column to an open
+            // table is a CTDS limitation that readers cannot sync past
+            // anyway (ska-sa/arcae#241) -- they must reopen -- so the read
+            // proceeds against the columns this handle already knows about,
+            // exactly as it did before the resync was introduced.
+            //
+            // The lock is deliberately kept: we hold it, and the destructor
+            // that releases it only runs because we do not throw here.
+            ARROW_LOG(DEBUG) << "Unable to resync table: " << e.what();
+          }
+        }
       }
     }
     ~MaybeLockAndFinalise() {
@@ -64,11 +108,28 @@ class IsolatedTableProxy : public std::enable_shared_from_this<IsolatedTableProx
       // stack unwinding of a functor that already threw, and a second
       // in-flight exception would call std::terminate.
       if (!locked) return;
+      if (lock_type == CasaLockType::Write) {
+        try {
+          proxy->flush(false);
+        } catch (const std::exception& e) {
+          ARROW_LOG(WARNING) << "Error flushing table: " << e.what();
+        }
+      }
+      // Unlock in its own try: a throwing flush must not cost us the
+      // release, for the same reason as above.
+      Unlock();
+    }
+
+   private:
+    // Release the lock, swallowing any error. Used from both the
+    // constructor's failure path and the destructor.
+    void Unlock() noexcept {
       try {
-        if (lock_type == CasaLockType::Write) proxy->flush(false);
         proxy->unlock();
       } catch (const std::exception& e) {
-        ARROW_LOG(WARNING) << "Error finalising table lock: " << e.what();
+        ARROW_LOG(WARNING) << "Error unlocking table: " << e.what();
+      } catch (...) {
+        ARROW_LOG(WARNING) << "Error unlocking table";
       }
     }
   };

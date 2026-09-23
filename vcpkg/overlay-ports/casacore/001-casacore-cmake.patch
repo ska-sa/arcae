@@ -140,10 +140,9 @@ index 12229f9..a15e508 100644
  
  // <summary>Base class for all Casacore library errors</summary>
 diff --git a/casa/IO/FileLocker.cc b/casa/IO/FileLocker.cc
-index b55c080..774a164 100644
 --- a/casa/IO/FileLocker.cc
 +++ b/casa/IO/FileLocker.cc
-@@ -24,158 +24,363 @@
+@@ -24,158 +24,366 @@
  //#                        Charlottesville, VA 22903-2475 USA
  
  #include <casacore/casa/IO/FileLocker.h>
@@ -210,6 +209,9 @@ index b55c080..774a164 100644
 +struct LockState {
 +    mutable std::recursive_mutex mutex;
 +    std::condition_variable_any condVar;
++    // The lock each thread holds. A thread with no entry holds nothing;
++    // acquire is idempotent, so there is deliberately no nesting count --
++    // see the comment on acquire.
 +    std::unordered_map<std::thread::id, FileLocker::LockType> lockType;
 +    bool modifyingFcntlLock = false;
 +    int  wantsWriteLock = 0;
@@ -365,34 +367,7 @@ index b55c080..774a164 100644
 -	    itsWriteLocked = False;
 -	}
 -	ls.l_type = F_RDLCK;
-+    #endif
-+
-+    if (type == None) return True;
-+
-+    struct flock lock;
-+    lock.l_type = decltype(lock.l_type)(type == Read ? F_RDLCK : F_WRLCK);
-+    lock.l_whence = SEEK_SET;
-+    lock.l_start = itsStart;
-+    lock.l_len = itsLength;
-+
-+    itsState->error = 0;
-+
-+    // nattempts == 0 restores the original casacore semantics of waiting until
-+    // the lock is acquired (retrying with a 1s backoff); nattempts > 0 makes a
-+    // finite number of attempts. In-process conflicts are already resolved by
-+    // the LockState coordination before we get here, so any contention fcntl
-+    // reports comes from other processes.
-+    for (uInt a = 0; nattempts == 0 || a < nattempts; ++a) {
-+        if (fcntl(itsFD, F_SETLK, &lock) != -1) return True;
-+        itsState->error = errno;
-+        if (!ShouldRetry(itsState->error)) break;
-+        itsState->error = 0;
-+        // Release the coordination lock while sleeping so other threads can
-+        // make progress; we still hold the fcntl gate (modifyingFcntlLock).
-+        state_lock.unlock();
-+        std::this_thread::sleep_for(1s);
-+        state_lock.lock();
-     }
+-    }
 -    if (nattempts == 0) {
 -	// Wait until lock succeeds.
 -	if (fcntl (itsFD, F_SETLKW, &ls) != -1) {
@@ -405,23 +380,7 @@ index b55c080..774a164 100644
 -	    return True;
 -	}
 -	itsError = errno;
-+
-+    return False;
-+}
-+
-+Bool FileLocker::hasLock (LockType type) const
-+{
-+    RecursiveMutexLock lock(itsState->mutex);
-+    auto tid = std::this_thread::get_id();
-+    LockType thread_lock_type = None;
-+    if (auto it = itsState->lockType.find(tid); it != std::end(itsState->lockType)) thread_lock_type = it->second;
-+    switch (thread_lock_type) {
-+        // In the original implementation, a write lock implies a read lock
-+        // Retain this logic so that other casacore table logic works
-+        case Write: return type == Write || type == Read;
-+        case Read: return type == Read;
-+        default: break;
-     }
+-    }
 -    // Do finite number of attempts. Wait 1 second between each attempt.
 -    for (uInt i=0; i<nattempts; i++) {
 -	if (fcntl (itsFD, F_SETLK, &ls) != -1) {
@@ -461,80 +420,7 @@ index b55c080..774a164 100644
 -	if (i < nattempts-1) {
 -	    sleep (1);
 -	}
-+
-+    return False;
-+}
-+
-+
-+std::size_t FileLocker::numLocks(LockType type) const {
-+    // itsState->mutex is recursive, so callers already holding it (acquire,
-+    // release) re-lock harmlessly.
-+    RecursiveMutexLock lock(itsState->mutex);
-+    return std::accumulate(
-+        std::begin(itsState->lockType), std::end(itsState->lockType), std::size_t{0},
-+        [&](auto i, auto tl) { return i + int(tl.second == type); }
-+    );
-+}
-+
-+Bool FileLocker::acquire (LockType requested_lock_type, uInt nattempts)
-+{
-+    RecursiveMutexLock state_lock(itsState->mutex);
-+    // Notify waiting threads of state change on exit
-+    auto defer_notify = finally([&](...) { itsState->condVar.notify_all(); });
-+    auto AllLocks = [this]() -> std::size_t { return numLocks(Read) + numLocks(Write); };
-+    auto tid = std::this_thread::get_id();
-+    auto thread_lock_type = None;
-+    if (auto it = itsState->lockType.find(tid); it != std::end(itsState->lockType)) thread_lock_type = it->second;
-+
-+    switch(requested_lock_type) {
-+        case None:
-+            // None was patched in, casacore shouldn't be passing it in
-+            // and neither should anyone else for that matter.
-+            throw std::runtime_error("None passed to FileLocker::acquire");
-+        case Write: {
-+            // This thread already has a write lock, return early
-+            if (thread_lock_type == Write) return True;
-+            // Signal that we want a write lock
-+            itsState->wantsWriteLock += 1;
-+            // To acquire a Write Lock, we wait until:
-+            // 1. no other threads are acquiring a lock, and
-+            // 2. no other thread wants a write lock, and
-+            // 3. this is the only read-locked thread (upgrade) or
-+            //    there are no other read or write locked threads
-+            itsState->condVar.wait(state_lock, [&]() {
-+                return !itsState->modifyingFcntlLock && AllLocks() == (thread_lock_type == Read ? 1 : 0);
-+            });
-+            assert(thread_lock_type == None || thread_lock_type == Read);
-+            // Gate other threads while we modify the OS lock. Do not record the
-+            // Write lock until fcntl actually succeeds (2f).
-+            itsState->modifyingFcntlLock = true;
-+            break;
-+        }
-+        case Read: {
-+            // This thread already has a read lock, return early
-+            if (thread_lock_type == Read) return True;
-+            // To acquire a read lock, wait until:
-+            // 1. no other threads are acquiring, and
-+            // 2. no other thread wants a write lock, and
-+            // 3. this is the only write-locked thread (downgrade) or
-+            //    there are no write-locked threads
-+            itsState->condVar.wait(state_lock, [&]() {
-+                return !itsState->modifyingFcntlLock && itsState->wantsWriteLock == 0 &&
-+                numLocks(Write) == (thread_lock_type == Write ? 1 : 0);
-+            });
-+            assert(thread_lock_type == None || thread_lock_type == Write);
-+            // Another thread has acquired the posix read lock, we simply
-+            // register this thread as a reader (shared read lock) and return
-+            if (thread_lock_type == None && numLocks(Read) > 0) {
-+                itsState->lockType.insert_or_assign(tid, Read);
-+                return True;
-+            }
-+            // Gate other threads while we modify the OS lock. Do not record the
-+            // Read lock until fcntl actually succeeds (2f).
-+            itsState->modifyingFcntlLock = true;
-+            break;
-+        }
-     }
+-    }
 -    itsWriteLocked = False;
 -    // Note that the system keeps a lock per file and not per fd.
 -    // So if the same file is opened in the same process and unlocked
@@ -551,32 +437,154 @@ index b55c080..774a164 100644
 -	        itsReadLocked = True;
 -	    }
 -	}
++    #endif
 +
-+    auto result = fcntlAquire(state_lock, requested_lock_type, nattempts);
++    if (type == None) return True;
 +
-+    // Lock acquisition has finished
-+    itsState->modifyingFcntlLock = false;
++    struct flock lock;
++    lock.l_type = decltype(lock.l_type)(type == Read ? F_RDLCK : F_WRLCK);
++    lock.l_whence = SEEK_SET;
++    lock.l_start = itsStart;
++    lock.l_len = itsLength;
 +
-+    switch(requested_lock_type) {
-+        case None:
-+            throw std::runtime_error("None passed to FileLocker::acquire");
-+        case Write: {
-+            // Record the lock only on success (2f); on failure the previous
-+            // lock type is left untouched.
-+            if (result) itsState->lockType.insert_or_assign(tid, Write);
-+            // A write lock is no longer desired
-+            itsState->wantsWriteLock -= 1;
-+            break;
-+        }
-+        case Read: {
-+            if (result) itsState->lockType.insert_or_assign(tid, Read);
-+            break;
-+        }
++    itsState->error = 0;
++
++    // nattempts == 0 restores the original casacore semantics of waiting until
++    // the lock is acquired (retrying with a 1s backoff); nattempts > 0 makes a
++    // finite number of attempts. In-process conflicts are already resolved by
++    // the LockState coordination before we get here, so any contention fcntl
++    // reports comes from other processes.
++    for (uInt a = 0; nattempts == 0 || a < nattempts; ++a) {
++        if (fcntl(itsFD, F_SETLK, &lock) != -1) return True;
++        itsState->error = errno;
++        if (!ShouldRetry(itsState->error)) break;
++        itsState->error = 0;
++        // Release the coordination lock while sleeping so other threads can
++        // make progress; we still hold the fcntl gate (modifyingFcntlLock).
++        state_lock.unlock();
++        std::this_thread::sleep_for(1s);
++        state_lock.lock();
      }
 -///    cout << "failed " << itsReadLocked << ' ' <<itsWriteLocked<<' '<<type<<
 -///	      ' '<<itsStart<<' '<<itsLength<<endl;
--    return False;
++
+     return False;
 -#endif
++}
++
++Bool FileLocker::hasLock (LockType type) const
++{
++    RecursiveMutexLock lock(itsState->mutex);
++    switch (heldType()) {
++        // In the original implementation, a write lock implies a read lock
++        // Retain this logic so that other casacore table logic works
++        case Write: return type == Write || type == Read;
++        case Read: return type == Read;
++        default: break;
++    }
++
++    return False;
++}
++
++
++std::size_t FileLocker::numLocks(LockType type) const {
++    // itsState->mutex is recursive, so callers already holding it (acquire,
++    // release) re-lock harmlessly.
++    RecursiveMutexLock lock(itsState->mutex);
++    return std::accumulate(
++        std::begin(itsState->lockType), std::end(itsState->lockType), std::size_t{0},
++        [&](auto i, const auto & tl) { return i + int(tl.second == type); }
++    );
++}
++
++// The lock type held by the calling thread, or None. Must be called with
++// itsState->mutex held.
++FileLocker::LockType FileLocker::heldType() const {
++    auto it = itsState->lockType.find(std::this_thread::get_id());
++    return it == std::end(itsState->lockType) ? None : it->second;
++}
++
++
++
++Bool FileLocker::acquire (LockType requested_lock_type, uInt nattempts)
++{
++    if (requested_lock_type == None) {
++        // None was patched in, casacore shouldn't be passing it in
++        // and neither should anyone else for that matter.
++        throw std::runtime_error("None passed to FileLocker::acquire");
++    }
++
++    RecursiveMutexLock state_lock(itsState->mutex);
++    // Notify waiting threads of state change on exit
++    auto defer_notify = finally([&](...) { itsState->condVar.notify_all(); });
++    auto AllLocks = [this]() -> std::size_t { return numLocks(Read) + numLocks(Write); };
++    auto tid = std::this_thread::get_id();
++    auto held = heldType();
++
++    // Already satisfied: this thread holds a lock at least as strong as the
++    // request (a write lock implies a read lock). Return without counting the
++    // nesting, and without a matching release becoming necessary.
++    //
++    // This idempotence is not an optimisation, it is required. PlainTable::lock
++    // re-acquires inside its "while (tableChanged)" loop after syncTable() has
++    // dropped the process's locks, and unlocks only once no matter how often it
++    // went round. A depth counter would leave the thread registered as a holder
++    // forever, and every later writer would wait on it.
++    if (held == Write || held == requested_lock_type) return True;
++
++    // held is None, or a Read being upgraded to a Write
++    const bool upgrade = (held == Read && requested_lock_type == Write);
++
++    if (upgrade) {
++        // Stop counting as a reader for the duration of the wait. Two readers
++        // upgrading at the same time would otherwise each wait for the other's
++        // read lock to go away, and neither can drop it while it is waiting.
++        // The fcntl lock itself stays in place; only the registration goes, and
++        // it is restored below if the upgrade does not happen.
++        itsState->lockType.erase(tid);
++        itsState->condVar.notify_all();
++    }
++
++    if (requested_lock_type == Write) {
++        // Signal that we want a write lock, so that readers queue behind us
++        itsState->wantsWriteLock += 1;
++        // Wait until no other thread is modifying the OS lock and no thread
++        // holds one
++        itsState->condVar.wait(state_lock, [&]() {
++            return !itsState->modifyingFcntlLock && AllLocks() == 0;
++        });
++    } else {
++        // Wait until no other thread is modifying the OS lock, no thread
++        // wants a write lock, and no thread holds one
++        itsState->condVar.wait(state_lock, [&]() {
++            return !itsState->modifyingFcntlLock && itsState->wantsWriteLock == 0 &&
++                   numLocks(Write) == 0;
++        });
++        // Another thread already holds the OS read lock. Register this thread
++        // as a shared reader and return without touching fcntl.
++        if (numLocks(Read) > 0) {
++            itsState->lockType[tid] = Read;
++            return True;
++        }
++    }
++
++    // Gate other threads while we modify the OS lock. Do not record the
++    // lock until fcntl actually succeeds.
++    itsState->modifyingFcntlLock = true;
++    auto result = fcntlAquire(state_lock, requested_lock_type, nattempts);
++    itsState->modifyingFcntlLock = false;
++
++    if (result) {
++        itsState->lockType[tid] = requested_lock_type;
++    } else if (upgrade) {
++        // The upgrade failed, so put back the read registration we gave up.
++        itsState->lockType[tid] = Read;
++    }
++
++    if (requested_lock_type == Write) {
++        // A write lock is no longer desired
++        itsState->wantsWriteLock -= 1;
++    }
 +
 +    return result;
 +}
@@ -584,34 +592,30 @@ index b55c080..774a164 100644
 +Bool FileLocker::release() {
 +    RecursiveMutexLock state_lock(itsState->mutex);
 +    auto tid = std::this_thread::get_id();
-+    auto lock_type = None;
-+    if (auto it = itsState->lockType.find(tid); it != std::end(itsState->lockType)) lock_type = it->second;
-+    if (lock_type == None) return True;
++    auto it = itsState->lockType.find(tid);
++    if (it == std::end(itsState->lockType)) return True;
 +
 +    // Notify waiting threads of state change on exit
 +    auto defer_notify = finally([&](...) { itsState->condVar.notify_all(); });
 +
-+    assert(numLocks(lock_type) >= 1);
++    auto lock_type = it->second;
++    // Drop this thread's registration before counting, so that the count
++    // reflects the threads still holding the lock. The entry is erased rather
++    // than blanked so that the map stays bounded by the number of threads
++    // currently holding a lock.
++    itsState->lockType.erase(it);
 +
-+    // We're not the last lock of this type
-+    // Update the lock type and return success
-+    if (numLocks(lock_type) > 1) {
-+        itsState->lockType.insert_or_assign(tid, None);
-+        return True;
-+    }
++    // Other threads still share this lock, so leave the OS lock in place
++    if (numLocks(lock_type) > 0) return True;
 +
-+    // Wait until no one else is modifying the lock
-+    itsState->condVar.wait(state_lock, [&]() { return itsState->modifyingFcntlLock == false; });
-+
++    // Wait until no one else is modifying the OS lock
++    itsState->condVar.wait(state_lock, [&]() { return !itsState->modifyingFcntlLock; });
 +    itsState->modifyingFcntlLock = true;
 +    auto result = fcntlRelease();
-+    // On successful lock release, update the lock type
-+    if (result) itsState->lockType.insert_or_assign(tid, None);
 +    itsState->modifyingFcntlLock = false;
 +    return result;
  }
  
-+
  // Release a lock.
 -Bool FileLocker::release()
 +Bool FileLocker::fcntlRelease()
@@ -626,7 +630,7 @@ index b55c080..774a164 100644
  #if defined(AIPS_NOFILELOCK)
      return True;
  #else
-@@ -192,7 +397,7 @@ Bool FileLocker::release()
+@@ -192,7 +400,7 @@
        return True;
      }
  #endif
@@ -635,7 +639,7 @@ index b55c080..774a164 100644
      return False;
  #endif
  }
-@@ -212,13 +417,19 @@ Bool FileLocker::canLock (uInt& pid, LockType type)
+@@ -212,13 +420,19 @@
  #if defined(AIPS_NOFILELOCK)
      return True;
  #else
@@ -660,7 +664,7 @@ index b55c080..774a164 100644
      }
      ls.l_whence = SEEK_SET;
      ls.l_start  = itsStart;
-@@ -227,18 +438,39 @@ Bool FileLocker::canLock (uInt& pid, LockType type)
+@@ -227,18 +441,39 @@
          pid = ls.l_pid;
  	return  (ls.l_type == F_UNLCK);
      }
@@ -706,7 +710,6 @@ index b55c080..774a164 100644
  } //# NAMESPACE CASACORE - END
 -
 diff --git a/casa/IO/FileLocker.h b/casa/IO/FileLocker.h
-index 250f5bf..c522123 100644
 --- a/casa/IO/FileLocker.h
 +++ b/casa/IO/FileLocker.h
 @@ -28,12 +28,18 @@
@@ -728,7 +731,7 @@ index 250f5bf..c522123 100644
  
  
  // <summary> 
-@@ -94,7 +100,9 @@ public:
+@@ -94,7 +100,9 @@
  	// Acquire a read lock.
  	Read,
  	// Acquire a write lock.
@@ -739,7 +742,7 @@ index 250f5bf..c522123 100644
      };
  
      // Default constructor creates an invalid fd.
-@@ -105,6 +113,14 @@ public:
+@@ -105,6 +113,14 @@
      // The segment is given by start and length. Length=0 means till the
      // end of the file.
      explicit FileLocker (int fd, uInt start=0, uInt length=0);
@@ -754,7 +757,7 @@ index 250f5bf..c522123 100644
  
      ~FileLocker();
  
-@@ -129,7 +145,7 @@ public:
+@@ -129,7 +145,7 @@
      // Test if the process has a lock for read or write on the file.
      Bool hasLock (LockType = Write) const;
  
@@ -763,13 +766,17 @@ index 250f5bf..c522123 100644
      int fd() const;
  
      // Get the last error.
-@@ -138,29 +154,27 @@ public:
+@@ -138,29 +154,31 @@
      // Get the message belonging to the last error.
      String lastMessage() const;
  
 +    std::size_t numLocks(LockType type) const;
 +
 +protected:
++    // The lock type held by the calling thread, or None.
++    // Callers must hold the coordination mutex.
++    LockType heldType() const;
++
 +    using RecursiveMutexLock = std::unique_lock<std::recursive_mutex>;
 +
 +    Bool fcntlAquire(RecursiveMutexLock & state_lock, LockType type = Write, uInt nattempts = 0);
@@ -804,7 +811,6 @@ index 250f5bf..c522123 100644
  
  
 diff --git a/casa/IO/LockFile.cc b/casa/IO/LockFile.cc
-index 0f853c5..b68ba84 100644
 --- a/casa/IO/LockFile.cc
 +++ b/casa/IO/LockFile.cc
 @@ -23,6 +23,15 @@
@@ -875,7 +881,7 @@ index 0f853c5..b68ba84 100644
  LockFile::LockFile (const String& fileName, double inspectInterval,
  		    Bool create, Bool setRequestFlag, Bool mustExist,
  		    uInt seqnr, Bool permLocking, Bool noLocking)
-@@ -84,50 +138,72 @@ LockFile::LockFile (const String& fileName, double inspectInterval,
+@@ -84,50 +138,72 @@
      AlwaysAssert (SIZEINT == CanonicalConversion::canonicalSize (static_cast<Int*>(0)),
  		  AipsError);
      itsName = Path(fileName).absoluteName();
@@ -982,7 +988,7 @@ index 0f853c5..b68ba84 100644
          // Set the file to in use by acquiring a read lock.
          itsUseLocker.acquire (FileLocker::Read, 1);
        }
-@@ -136,10 +212,16 @@ LockFile::LockFile (const String& fileName, double inspectInterval,
+@@ -136,10 +212,44 @@
  
  LockFile::~LockFile()
  {
@@ -990,6 +996,34 @@ index 0f853c5..b68ba84 100644
 -    if (fd >= 0) {
 -	FiledesIO::close (fd);
 -    }
++    // Drop any lock this thread still holds through these lockers.
++    //
++    // Unpatched casacore gets this for free: the lock dies with the file
++    // descriptor, which was private to this LockFile. Here the descriptor is
++    // shared through the cache below and the coordination state outlives the
++    // FileLocker, so an unreleased lock would stay registered forever.
++    //
++    // PlainTable::closeObject() releases only when the table was opened for
++    // write, so every read-only table -- including the temporary,
++    // permanently locked one that PlainTable::syncTable() opens to reread a
++    // changed table file -- reaches here still holding its read lock. Left
++    // registered, those readers block every subsequent writer for good.
++    //
++    // Releasing an outer holder's lock on the same thread is the unpatched
++    // behaviour too, and PlainTable::lock is written for it: it reacquires in
++    // its "while (tableChanged)" loop precisely because syncTable() drops the
++    // process's locks.
++    // Read locks only. A write lock still owes TableLockData::release its
++    // flush callback, which that function runs only while hasLock(Write) is
++    // still true, and PlainTable::closeObject does perform that release for
++    // a table opened for write. Dropping a write registration here would
++    // silently skip the flush.
++    if (itsLocker.hasLock(FileLocker::Read) && !itsLocker.hasLock(FileLocker::Write)) {
++        itsLocker.release();
++    }
++    // The "in use" locker is only ever read locked.
++    itsUseLocker.release();
++
 +    // Close file descriptor once all leases have expired
 +    std::lock_guard<std::recursive_mutex> lock(fd_cache_mutex());
 +    auto it = fd_cache().find(itsName);
@@ -1003,7 +1037,7 @@ index 0f853c5..b68ba84 100644
  }
  
  Bool LockFile::isMultiUsed()
-@@ -239,6 +321,7 @@ void LockFile::getInfo (MemoryIO& info)
+@@ -239,6 +349,7 @@
  {
      // Do nothing if no locking.
      if (itsLocker.fd() < 0) {
@@ -1011,7 +1045,7 @@ index 0f853c5..b68ba84 100644
          return;
      }
      // The lock file contains:
-@@ -246,6 +329,7 @@ void LockFile::getInfo (MemoryIO& info)
+@@ -246,6 +357,7 @@
      // - thereafter the length of the info (as a uInt)
      // - thereafter the entire info
      uChar buffer[2048];
@@ -1019,7 +1053,7 @@ index 0f853c5..b68ba84 100644
      // Read the first part of the file.
      traceLSEEK (itsLocker.fd(), 0, SEEK_SET);
      uInt leng = ::read (itsLocker.fd(), buffer, sizeof(buffer));
-@@ -284,6 +368,7 @@ void LockFile::putInfo (const MemoryIO& info) const
+@@ -284,6 +396,7 @@
      if (itsLocker.fd() < 0  ||  !itsWritable  ||  infoLeng == 0) {
  	return;
      }
@@ -1027,7 +1061,7 @@ index 0f853c5..b68ba84 100644
      // Write the info into the lock file preceeded by its length.
      uChar buffer[1024];
      uInt leng = CanonicalConversion::fromLocal (buffer, infoLeng);
-@@ -307,6 +392,7 @@ void LockFile::putInfo (const MemoryIO& info) const
+@@ -307,6 +420,7 @@
  Int LockFile::getNrReqId() const
  {
      uChar buffer[8];
@@ -1035,7 +1069,7 @@ index 0f853c5..b68ba84 100644
      uInt leng = tracePREAD (itsLocker.fd(), buffer, SIZEINT, 0);
      return getInt (buffer, leng, 0);
  }
-@@ -339,7 +425,7 @@ void LockFile::addReqId()
+@@ -339,7 +453,7 @@
  	inx = NRREQID-1;
      }
      itsReqId[0] = inx+1;
@@ -1044,7 +1078,7 @@ index 0f853c5..b68ba84 100644
      itsReqId[2*inx+2] = itsHostId;
      putReqId (itsLocker.fd());
  }
-@@ -352,7 +438,7 @@ void LockFile::removeReqId()
+@@ -352,7 +466,7 @@
      //# can happen when a process with an outstanding request died.
      Int nr = itsReqId[0];
      for (i=0; i<nr; i++) {
@@ -1053,7 +1087,7 @@ index 0f853c5..b68ba84 100644
          &&  Int(itsHostId) == itsReqId[2*i+2]) {
  	    break;
  	}
-@@ -372,6 +458,7 @@ void LockFile::putReqId (int fd) const
+@@ -372,6 +486,7 @@
  	uInt leng = CanonicalConversion::fromLocal (buffer,
  						    itsReqId.storage(),
  						    itsReqId.nelements());
@@ -1061,7 +1095,7 @@ index 0f853c5..b68ba84 100644
          AlwaysAssert(tracePWRITE(fd, (Char *)buffer, leng, 0) == Int(leng),
                       AipsError);
  	fsync (fd);
-@@ -382,6 +469,7 @@ void LockFile::getReqId()
+@@ -382,6 +497,7 @@
  {
      int fd = itsLocker.fd();
      uChar buffer[SIZEREQID];
@@ -1069,7 +1103,7 @@ index 0f853c5..b68ba84 100644
      if (tracePREAD(fd, buffer, SIZEREQID, 0) > 0) {
  	CanonicalConversion::fromLocal (buffer,
  					itsReqId.storage(),
-@@ -436,4 +524,8 @@ uInt LockFile::showLock (uInt& pid, Bool& permLocked, const String& fileName)
+@@ -436,4 +552,8 @@
      return result;
  }
  
@@ -1372,6 +1406,27 @@ index 59feaec..cd87055 100644
  LIBRARY DESTINATION lib${LIB_SUFFIX}
  ARCHIVE DESTINATION lib${LIB_SUFFIX}
  LIBRARY PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
+diff --git a/tables/DataMan/TiledStMan.cc b/tables/DataMan/TiledStMan.cc
+--- a/tables/DataMan/TiledStMan.cc
++++ b/tables/DataMan/TiledStMan.cc
+@@ -1164,10 +1164,16 @@
+       headerFile >> tmp;
+       persMaxCacheSize_p = tmp;
+     }
+-    maxCacheSize_p = persMaxCacheSize_p;
+     if (firstTime) {
++        // The size stored in the header is the initial in-memory size, but
++        // only on open. Table::resync() reaches readHeader too, and a cache
++        // size set at run time through setMaximumCacheSize has to survive
++        // it: a reader that resyncs to pick up another handle's writes
++        // would otherwise silently lose its cache bound the first time
++        // anybody wrote to the table.
++        maxCacheSize_p = persMaxCacheSize_p;
+ 	// Setup the various things (i.e. initialize other variables).
+ 	setup (extraNdim);
+     }
+     uInt nrdim;
+     headerFile >> nrdim;
 diff --git a/tables/Tables/PlainTable.cc b/tables/Tables/PlainTable.cc
 index f8f7653..fe1c079 100644
 --- a/tables/Tables/PlainTable.cc

@@ -111,6 +111,15 @@ Result<bool> IsolatedTableProxy::Close() {
   std::vector<Future<bool>> results;
   results.reserve(proxy_pools_.size());
   Status inline_status = Status::OK();
+  // Let each instance finish what it is doing before closing it. Closing a
+  // table is not a passive teardown: casacore's TableProxy::close() flushes,
+  // and the flush takes a table lock of its own (keywordSet() ->
+  // ColumnSet::userLock). Closing while this instance still has work in
+  // flight therefore puts the close into a lock wait behind an operation it
+  // should simply have waited for.
+  for (auto& pp : proxy_pools_) {
+    if (!pp.io_pool_->OwnsThisThread()) pp.io_pool_->WaitForIdle();
+  }
   for (auto& [proxy, pool] : proxy_pools_) {
     // Submitting to a pool that owns the calling thread and then waiting on the
     // result deadlocks: the only worker able to run the close task is the

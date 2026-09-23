@@ -107,7 +107,7 @@ class ZeroRowTableProxyTest : public ::testing::Test {
     return NewTableProxy::Make([name = table_name_]() {
       auto lock = TableLock(TableLock::LockOption::AutoLocking);
       auto lockoptions = Record();
-      lockoptions.define("option", "nolock");
+      lockoptions.define("option", "user");
       lockoptions.define("internal", lock.interval());
       lockoptions.define("maxwait", casacore::Int(lock.maxWait()));
       return std::make_shared<TableProxy>(name, lockoptions, Table::Old);
@@ -236,7 +236,7 @@ class FixedTableProxyTest : public ::testing::TestWithParam<Parametrization> {
         [&, name = table_name_]() {
           auto lock = TableLock(TableLock::LockOption::AutoLocking);
           auto lockoptions = Record();
-          lockoptions.define("option", "nolock");
+          lockoptions.define("option", "user");
           lockoptions.define("internal", lock.interval());
           lockoptions.define("maxwait", casacore::Int(lock.maxWait()));
           auto tp = std::make_shared<TableProxy>(name, lockoptions, Table::Old);
@@ -675,7 +675,7 @@ class VariableProxyTest : public ::testing::TestWithParam<Parametrization> {
     return NewTableProxy::Make([name = table_name_]() {
       auto lock = TableLock(TableLock::LockOption::AutoLocking);
       auto lockoptions = Record();
-      lockoptions.define("option", "nolock");
+      lockoptions.define("option", "user");
       lockoptions.define("internal", lock.interval());
       lockoptions.define("maxwait", casacore::Int(lock.maxWait()));
       return std::make_shared<TableProxy>(name, lockoptions, Table::Old);

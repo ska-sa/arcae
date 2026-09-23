@@ -26,6 +26,10 @@ add_executable(parallel_write_test parallel_write_test.cc)
 target_link_libraries(parallel_write_test PRIVATE GTest::gtest_main arcae test_utils)
 add_test(parallel_write_test parallel_write_test)
 
+add_executable(concurrent_rw_test concurrent_rw_test.cc)
+target_link_libraries(concurrent_rw_test PRIVATE GTest::gtest_main arcae test_utils)
+add_test(concurrent_rw_test concurrent_rw_test)
+
 add_executable(data_partition_test data_partition_test.cc)
 target_link_libraries(data_partition_test PRIVATE GTest::gtest_main arcae test_utils)
 add_test(data_partition_test data_partition_test)
@@ -57,6 +61,7 @@ set_tests_properties(result_shape_test
                      isolated_table_proxy_test
                      new_table_proxy_test
                      parallel_write_test
+                     concurrent_rw_test
                      selection_test
                      slice_shape_test
                      PROPERTIES ENVIRONMENT "LD_LIBRARY_PATH=${VCPKG_LIBDIRS}")

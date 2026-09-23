@@ -25,8 +25,8 @@ class NewTableProxy {
                                                             std::size_t ninstances = 1) {
     struct enable_make_shared_ntp : public NewTableProxy {};
     std::shared_ptr<NewTableProxy> ntp = std::make_shared<enable_make_shared_ntp>();
-    ARROW_ASSIGN_OR_RAISE(
-        ntp->itp_, detail::IsolatedTableProxy::Make(std::move(functor), ninstances));
+    ARROW_ASSIGN_OR_RAISE(ntp->itp_, detail::IsolatedTableProxy::Make(
+                                         std::forward<Fn>(functor), ninstances));
     return ntp;
   }
 
@@ -112,11 +112,6 @@ class NewTableProxy {
 
   // Close the table
   arrow::Result<bool> Close();
-
- protected:
-  // Returns true if multithreaded writes are supported
-  // by this NewTableProxy
-  arrow::Status SafeMultithreadedWrites() const;
 
  private:
   std::shared_ptr<detail::IsolatedTableProxy> itp_;

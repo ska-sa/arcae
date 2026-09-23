@@ -10,9 +10,7 @@ using ::arrow::Status;
 
 namespace arcae {
 
-Status SafeMultiThreadedWrites() {
-  return Status::NotImplemented("Safe Multi-threaded write support");
-}
+Status SafeMultiThreadedWrites() { return Status::OK(); }
 
 Result<std::string> Configuration::Get(const std::string& key) const {
   if (auto it = kvmap_.find(key); it != kvmap_.end()) {

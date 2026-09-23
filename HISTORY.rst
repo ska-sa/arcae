@@ -30,6 +30,7 @@ X.Y.Z (XX-XX-XXXX)
 
 0.5.3 (1-07-2026)
 ------------------
+* Implement write-locking (:pr:`162`)
 * Upgrade to casacore 3.8.1 (:pr:`218`)
 * Remove extraneous whitespace in casacore patch (:pr:`215`)
 * Introduce ``pytest != 9.1.0`` version restriction (:pr:`214`)

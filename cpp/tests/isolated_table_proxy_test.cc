@@ -21,6 +21,7 @@
 #include "arcae/isolated_table_proxy.h"
 
 using ::arcae::GetArrayColumn;
+using ::arcae::detail::CasaLockType;
 using ::arcae::detail::IsolatedTableProxy;
 
 using casacore::Array;
@@ -70,7 +71,7 @@ class IsolatedTableProxyTest : public ::testing::Test {
     return IsolatedTableProxy::Make([name = table_name_, weak_proxy]() {
       auto lock = TableLock(TableLock::LockOption::AutoLocking);
       auto lockoptions = Record();
-      lockoptions.define("option", "nolock");
+      lockoptions.define("option", "user");
       lockoptions.define("internal", lock.interval());
       lockoptions.define("maxwait", casacore::Int(lock.maxWait()));
       auto proxy = std::make_shared<TableProxy>(name, lockoptions, Table::Old);
@@ -182,7 +183,9 @@ TEST_F(IsolatedTableProxyTest, FailIfClosed) {
 // could ever run
 TEST_F(IsolatedTableProxyTest, CloseFromIsolationThread) {
   ASSERT_OK_AND_ASSIGN(auto itp, OpenTable());
-  auto fut = itp->RunAsync([itp](const TableProxy&) { return itp->Close(); });
+  // No lock: the task closes the table, so there is nothing left to unlock
+  auto fut = itp->RunAsync([itp](const TableProxy&) { return itp->Close(); },
+                           CasaLockType::None);
   ASSERT_TRUE(fut.Wait(kTeardownTimeout))
       << "Close() deadlocked on its own isolation thread";
   ASSERT_OK_AND_ASSIGN(auto closed, fut.MoveResult());

@@ -18,6 +18,7 @@
 #include <arrow/util/logging.h>
 #include <arrow/util/thread_pool.h>
 
+#include <casacore/casa/IO/FileLocker.h>
 #include <casacore/casa/Utilities/DataType.h>
 #include <casacore/tables/Tables/ArrayColumn.h>
 #include <casacore/tables/Tables/ScalarColumn.h>
@@ -43,6 +44,7 @@ using ::arrow::ShouldSchedule;
 using ::arrow::Status;
 using ::arrow::internal::GetCpuThreadPool;
 
+using LockType = casacore::FileLocker::LockType;
 template <class CT>
 using CasaArray = ::casacore::Array<CT>;
 using ::casacore::ArrayColumn;
@@ -79,29 +81,31 @@ struct WriteCallback {
     // If the chunk is contiguous in memory, we can write
     // from a CASA Array view over that position in the buffer
     if (chunk.IsContiguous()) {
-      return itp->RunAsync([column_name = std::move(column), chunk = chunk,
-                            buffer = buffer](const TableProxy& tp) -> bool {
-        CT* in_ptr = const_cast<CT*>(buffer->template data_as<CT>());
-        in_ptr += chunk.FlatOffset();
-        auto shape = chunk.GetShape();
-        if (shape.size() == 1) {
-          auto column = ScalarColumn<CT>(tp.table(), column_name);
-          auto vector = CasaVector<CT>(shape, in_ptr, casacore::SHARE);
-          column.putColumnCells(chunk.ReferenceRows(), vector);
-          return true;
-        }
-        auto column = ArrayColumn<CT>(tp.table(), column_name);
-        auto ref_rows = chunk.ReferenceRows();
-        if (ref_rows.nrows() == 1) {
-          auto array =
-              CasaArray<CT>(chunk.SectionSlicer().length(), in_ptr, casacore::SHARE);
-          column.putSlice(ref_rows.firstRow(), chunk.SectionSlicer(), array);
-          return true;
-        }
-        auto array = CasaArray<CT>(shape, in_ptr, casacore::SHARE);
-        column.putColumnCells(ref_rows, chunk.SectionSlicer(), array);
-        return true;
-      });
+      return itp->RunAsync(
+          [column_name = std::move(column), chunk = chunk,
+           buffer = buffer](const TableProxy& tp) -> bool {
+            CT* in_ptr = const_cast<CT*>(buffer->template data_as<CT>());
+            in_ptr += chunk.FlatOffset();
+            auto shape = chunk.GetShape();
+            if (shape.size() == 1) {
+              auto column = ScalarColumn<CT>(tp.table(), column_name);
+              auto vector = CasaVector<CT>(shape, in_ptr, casacore::SHARE);
+              column.putColumnCells(chunk.ReferenceRows(), vector);
+              return true;
+            }
+            auto column = ArrayColumn<CT>(tp.table(), column_name);
+            auto ref_rows = chunk.ReferenceRows();
+            if (ref_rows.nrows() == 1) {
+              auto array =
+                  CasaArray<CT>(chunk.SectionSlicer().length(), in_ptr, casacore::SHARE);
+              column.putSlice(ref_rows.firstRow(), chunk.SectionSlicer(), array);
+              return true;
+            }
+            auto array = CasaArray<CT>(shape, in_ptr, casacore::SHARE);
+            column.putColumnCells(ref_rows, chunk.SectionSlicer(), array);
+            return true;
+          },
+          LockType::Write);
     }
 
     // Transpose the array into the output buffer
@@ -142,24 +146,26 @@ struct WriteCallback {
           return array;
         }));
 
-    return itp->Then(transpose_fut,
-                     [column_name = std::move(column), chunk = chunk](
-                         const CasaArray<CT>& data, const TableProxy& tp) -> bool {
-                       if (chunk.nDim() == 1) {
-                         auto column = ScalarColumn<CT>(tp.table(), column_name);
-                         column.putColumnCells(chunk.ReferenceRows(), data);
-                         return true;
-                       }
-                       auto column = ArrayColumn<CT>(tp.table(), column_name);
-                       auto ref_rows = chunk.ReferenceRows();
-                       if (ref_rows.nrows() == 1) {
-                         column.putSlice(ref_rows.firstRow(), chunk.SectionSlicer(),
-                                         data.reform(chunk.SectionSlicer().length()));
-                         return true;
-                       }
-                       column.putColumnCells(ref_rows, chunk.SectionSlicer(), data);
-                       return true;
-                     });
+    return itp->Then(
+        transpose_fut,
+        [column_name = std::move(column), chunk = chunk](const CasaArray<CT>& data,
+                                                         const TableProxy& tp) -> bool {
+          if (chunk.nDim() == 1) {
+            auto column = ScalarColumn<CT>(tp.table(), column_name);
+            column.putColumnCells(chunk.ReferenceRows(), data);
+            return true;
+          }
+          auto column = ArrayColumn<CT>(tp.table(), column_name);
+          auto ref_rows = chunk.ReferenceRows();
+          if (ref_rows.nrows() == 1) {
+            column.putSlice(ref_rows.firstRow(), chunk.SectionSlicer(),
+                            data.reform(chunk.SectionSlicer().length()));
+            return true;
+          }
+          column.putColumnCells(ref_rows, chunk.SectionSlicer(), data);
+          return true;
+        },
+        LockType::Write);
   }
 
   // Write a chunk of data from the encapsulated buffer
@@ -301,16 +307,18 @@ Future<bool> WriteImpl(const std::shared_ptr<IsolatedTableProxy>& itp,
     std::shared_ptr<Selection> selection;
   };
 
-  auto shape_fut = itp->RunAsync([column = column, selection = selection, data = data](
-                                     TableProxy& tp) mutable -> Result<ShapeResult> {
-    if (!tp.isWritable()) tp.reopenRW();
-    ARROW_RETURN_NOT_OK(ColumnExists(tp.table(), column));
-    auto table_column = TableColumn(tp.table(), column);
-    ARROW_ASSIGN_OR_RAISE(auto shape_data,
-                          ResultShapeData::MakeWrite(table_column, data, selection));
-    return ShapeResult{std::make_shared<ResultShapeData>(std::move(shape_data)),
-                       std::make_shared<Selection>(std::move(selection))};
-  });
+  auto shape_fut = itp->RunAsync(
+      [column = column, selection = selection,
+       data = data](TableProxy& tp) mutable -> Result<ShapeResult> {
+        MaybeReopenRW(tp);
+        ARROW_RETURN_NOT_OK(ColumnExists(tp.table(), column));
+        auto table_column = TableColumn(tp.table(), column);
+        ARROW_ASSIGN_OR_RAISE(auto shape_data,
+                              ResultShapeData::MakeWrite(table_column, data, selection));
+        return ShapeResult{std::make_shared<ResultShapeData>(std::move(shape_data)),
+                           std::make_shared<Selection>(std::move(selection))};
+      },
+      LockType::Write);
 
   // Partition the resulting shape into contiguous chunks
   // of data to write to disk

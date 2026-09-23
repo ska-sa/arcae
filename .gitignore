@@ -182,3 +182,5 @@ pyrightconfig.json
 
 # Casa tables
 *.table
+
+wheelhouse/*

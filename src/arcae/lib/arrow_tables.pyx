@@ -485,6 +485,11 @@ cdef class Table:
         with nogil:
             GetResultValue(self.c_table.get().AddRows(cnrows))
 
+    def iswritable(self) -> bool:
+        with nogil:
+            writable = GetResultValue(self.c_table.get().IsWritable())
+        return writable
+
     def addcols(self, columndescs: Dict, dminfo: Dict | None):
         cdef:
             string cjson_columndescs = tobytes(json.dumps(columndescs))

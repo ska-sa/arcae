@@ -88,6 +88,7 @@ cdef extern from "arcae/new_table_proxy.h" namespace "arcae" nogil:
             const string & json_columndescs,
             const string & json_dminfo)
 
+        CResult[bool] IsWritable " NewTableProxy::IsWritable"()
 
 cdef extern from "arcae/table_factory.h" namespace "arcae" nogil:
     cdef CResult[shared_ptr[CCasaTable]] COpenTable" arcae::OpenTable"(

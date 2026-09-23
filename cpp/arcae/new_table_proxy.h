@@ -86,6 +86,9 @@ class NewTableProxy {
   // Return the number of rows in this table
   arrow::Result<std::size_t> nRows() const;
 
+  // Return true if this table is writable
+  arrow::Result<bool> IsWritable() const;
+
   // Add rows to the table
   arrow::Result<bool> AddRows(std::size_t nrows);
 

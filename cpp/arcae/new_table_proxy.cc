@@ -149,6 +149,12 @@ Result<std::size_t> NewTableProxy::nRows() const {
       .MoveResult();
 }
 
+Result<bool> NewTableProxy::IsWritable() const {
+  return itp_
+      ->RunAsync([](const TableProxy& tp) -> bool { return tp.table().isWritable(); })
+      .MoveResult();
+}
+
 Result<bool> NewTableProxy::AddRows(std::size_t nrows) {
   ARROW_RETURN_NOT_OK(SafeMultithreadedWrites());
   return itp_

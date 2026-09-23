@@ -1,3 +1,4 @@
+import pytest
 from numpy.testing import assert_array_equal
 
 from arcae.lib.arrow_tables import Table, ms_descriptor
@@ -398,3 +399,30 @@ def test_weather_subtable_descriptor():
         "_keywords_": {},
         "_private_keywords_": {},
     }
+
+
+def test_complete_ms_descriptor_roundtrips(tmp_path_factory):
+    """The complete MAIN descriptor must survive a round trip back
+    through the table factory. An empty JSON array is untyped and does
+    not parse, so FLAG_CATEGORY's CATEGORY keyword is not emitted."""
+    from arcae.lib.arrow_tables import Table, ms_descriptor
+
+    table_desc = ms_descriptor("MAIN", complete=True)
+    assert "CATEGORY" not in table_desc["FLAG_CATEGORY"]["keywords"]
+
+    ms = str(tmp_path_factory.mktemp("complete_ms") / "complete.ms")
+    with Table.ms_from_descriptor(ms, table_desc=table_desc) as T:
+        assert "FLAG_CATEGORY" in T.columns()
+
+
+def test_unparseable_descriptor_raises(tmp_path_factory):
+    """A descriptor casacore cannot parse raises rather than
+    terminating the process from a pool thread"""
+    from arcae.lib.arrow_tables import Table
+
+    path = str(tmp_path_factory.mktemp("bad_desc") / "bad.tab")
+
+    with pytest.raises(Exception, match="Unable to parse table_desc"):
+        Table.from_descriptor(
+            path, table_desc={"A": {"valueType": "double", "keywords": {"E": []}}}
+        )

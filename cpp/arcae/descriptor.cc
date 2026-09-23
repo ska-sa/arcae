@@ -102,22 +102,25 @@ TableDesc MainMSDesc(bool complete) {
   // Get required descriptor
   TableDesc td = MeasurementSet::requiredTableDesc();
 
+  // Remove the CATEGORY keyword from the FLAG_CATEGORY column
+  // This empty Vector<String> gets converted to a python dictionary as
+  // 'FLAG_CATEGORY' : {
+  //     ...
+  //     keywords': {'CATEGORY' : []},
+  //     ...
+  // }
+  //
+  // Due to the missing type information this gets converted
+  // into something like Vector<int> when passed to the C++ layer,
+  // which results in Table Conformance errors. An empty JSON array is
+  // also untyped, so a descriptor carrying one does not survive a
+  // round trip back through JsonParser.
+  // This is an OK solution since the C++ layer always adds this keyword
+  // if it is missing from the MS
+  // (see addCat())
+  td.rwColumnDesc(kFlagCategory).rwKeywordSet().removeField(kCategory);
+
   if (!complete) {
-    // Remove the CATEGORY keyword from the FLAG_CATEGORY column
-    // This empty Vector<String> gets converted to a python dictionary as
-    // 'FLAG_CATEGORY' : {
-    //     ...
-    //     keywords': {'CATEGORY' : []},
-    //     ...
-    // }
-    //
-    // Due to the missing type information this gets converted
-    // into something like Vector<int> when passed to the C++ layer,
-    // which results in Table Conformance errors
-    // This is an OK solution since the C++ layer always adds this keyword
-    // if it is missing from the MS
-    // (see addCat())
-    td.rwColumnDesc(kFlagCategory).rwKeywordSet().removeField(kCategory);
     return td;
   }
 
@@ -309,6 +312,17 @@ TableDesc MergeRequiredAndUserTableDescs(const TableDesc& required_td,
   return result;
 }
 
+// Parse a JSON record, converting a casacore parse failure into a Status.
+// casacore throws JsonError, which would otherwise escape through the
+// Arrow thread pool and terminate the process
+Result<Record> ParseRecord(const std::string& json, const char* what) {
+  try {
+    return JsonParser::parse(json).toRecord();
+  } catch (const casacore::AipsError& error) {
+    return arrow::Status::Invalid("Unable to parse ", what, ": ", error.what());
+  }
+}
+
 }  // namespace
 
 // Get the table descriptions for the given table.
@@ -328,7 +342,7 @@ Result<SetupNewTable> DefaultMSFactory(const std::string& name,
                                        const std::string& json_dminfo) {
   String msg;
   TableDesc user_td;
-  auto table_desc = JsonParser::parse(json_table_desc).toRecord();
+  ARROW_ASSIGN_OR_RAISE(auto table_desc, ParseRecord(json_table_desc, "table_desc"));
 
   // Create Table Description object from extra user table description
   if (!TableProxy::makeTableDesc(table_desc, user_td, msg)) {
@@ -344,7 +358,7 @@ Result<SetupNewTable> DefaultMSFactory(const std::string& name,
   SetupNewTable setup = SetupNewTable(name, final_desc, Table::New);
 
   // Apply any data manager info
-  auto dminfo = JsonParser::parse(json_dminfo).toRecord();
+  ARROW_ASSIGN_OR_RAISE(auto dminfo, ParseRecord(json_dminfo, "dminfo"));
   setup.bindCreate(dminfo);
 
   return setup;
@@ -355,7 +369,7 @@ Result<SetupNewTable> TableFactory(const std::string& name,
                                    const std::string& json_dminfo) {
   String msg;
   TableDesc user_td;
-  auto table_desc = JsonParser::parse(json_table_desc).toRecord();
+  ARROW_ASSIGN_OR_RAISE(auto table_desc, ParseRecord(json_table_desc, "table_desc"));
 
   // Create Table Description object purely from the user table description.
   // No MeasurementSet columns are merged in, so a caller asking for a plain
@@ -368,7 +382,7 @@ Result<SetupNewTable> TableFactory(const std::string& name,
   SetupNewTable setup = SetupNewTable(name, user_td, Table::New);
 
   // Apply any data manager info
-  auto dminfo = JsonParser::parse(json_dminfo).toRecord();
+  ARROW_ASSIGN_OR_RAISE(auto dminfo, ParseRecord(json_dminfo, "dminfo"));
   setup.bindCreate(dminfo);
 
   return setup;

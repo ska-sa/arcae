@@ -526,6 +526,66 @@ cdef class Table:
             writable = GetResultValue(self.c_table.get().IsWritable())
         return writable
 
+    def getkeywords(self) -> Dict[str, Any]:
+        """Returns the table keywords"""
+        return self._getkeywords("")
+
+    def getcolkeywords(self, column: str) -> Dict[str, Any]:
+        """Returns the keywords of `column`"""
+        if not column:
+            raise ValueError("A column name is required")
+        return self._getkeywords(column)
+
+    def _getkeywords(self, column: str) -> Dict[str, Any]:
+        cdef string ccolumn = tobytes(column)
+        with nogil:
+            keywords = GetResultValue(self.c_table.get().GetKeywords(ccolumn))
+        return json.loads(frombytes(keywords))
+
+    def putkeywords(self, keywords: Dict[str, Any]):
+        """Defines the given table keywords.
+
+        Keywords absent from `keywords` are left untouched.
+        A string value of the form ``"Table: <path>"`` defines a
+        subtable keyword referring to the table at `<path>`.
+        """
+        self._putkeywords(keywords, "")
+
+    def putcolkeywords(self, column: str, keywords: Dict[str, Any]):
+        """Defines the given keywords on `column`.
+
+        Keywords absent from `keywords` are left untouched.
+        """
+        if not column:
+            raise ValueError("A column name is required")
+        self._putkeywords(keywords, column)
+
+    def _putkeywords(self, keywords: Dict[str, Any], column: str):
+        cdef:
+            string cjson_keywords = tobytes(json.dumps(keywords))
+            string ccolumn = tobytes(column)
+
+        with nogil:
+            GetResultValue(self.c_table.get().PutKeywords(cjson_keywords, ccolumn))
+
+    def removekeyword(self, keyword: str):
+        """Removes the named table keyword"""
+        self._removekeyword(keyword, "")
+
+    def removecolkeyword(self, column: str, keyword: str):
+        """Removes the named keyword from `column`"""
+        if not column:
+            raise ValueError("A column name is required")
+        self._removekeyword(keyword, column)
+
+    def _removekeyword(self, keyword: str, column: str):
+        cdef:
+            string ckeyword = tobytes(keyword)
+            string ccolumn = tobytes(column)
+
+        with nogil:
+            GetResultValue(self.c_table.get().RemoveKeyword(ckeyword, ccolumn))
+
     def addcols(self, columndescs: Dict, dminfo: Dict | None):
         cdef:
             string cjson_columndescs = tobytes(json.dumps(columndescs))

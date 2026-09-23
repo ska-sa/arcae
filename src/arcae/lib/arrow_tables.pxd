@@ -87,8 +87,16 @@ cdef extern from "arcae/new_table_proxy.h" namespace "arcae" nogil:
         CResult[bool] AddColumns " NewTableProxy::AddColumns"(
             const string & json_columndescs,
             const string & json_dminfo)
-
         CResult[bool] IsWritable " NewTableProxy::IsWritable"()
+        CResult[string] GetKeywords " NewTableProxy::GetKeywords"(
+            const string & column)
+        CResult[bool] PutKeywords " NewTableProxy::PutKeywords"(
+            const string & json_keywords,
+            const string & column)
+        CResult[bool] RemoveKeyword " NewTableProxy::RemoveKeyword"(
+            const string & keyword,
+            const string & column)
+
 
 cdef extern from "arcae/table_factory.h" namespace "arcae" nogil:
     cdef CResult[shared_ptr[CCasaTable]] COpenTable" arcae::OpenTable"(

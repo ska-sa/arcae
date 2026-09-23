@@ -89,6 +89,18 @@ class NewTableProxy {
   // Return true if this table is writable
   arrow::Result<bool> IsWritable() const;
 
+  // Get the table (column empty) or column keywords as a JSON string
+  arrow::Result<std::string> GetKeywords(const std::string& column = {}) const;
+
+  // Define table (column empty) or column keywords from a JSON record string.
+  // Existing keywords not named in the record are left untouched
+  arrow::Result<bool> PutKeywords(const std::string& json_keywords,
+                                  const std::string& column = {});
+
+  // Remove a table (column empty) or column keyword
+  arrow::Result<bool> RemoveKeyword(const std::string& keyword,
+                                    const std::string& column = {});
+
   // Add rows to the table
   arrow::Result<bool> AddRows(std::size_t nrows);
 

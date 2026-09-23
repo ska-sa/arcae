@@ -103,6 +103,13 @@ cdef extern from "arcae/table_factory.h" namespace "arcae" nogil:
             const string & json_table_desc,
             const string & json_dminfo,
             const string & json_cache_size)
+    cdef CResult[shared_ptr[CCasaTable]] CCreateTable" arcae::CreateTable"(
+            const string & name,
+            size_t ninstances,
+            const string & json_table_desc,
+            const string & json_dminfo,
+            size_t nrow,
+            const string & json_cache_size)
     cdef CResult[shared_ptr[CCasaTable]] CTaql" arcae::Taql"(
             const string & taql,
             const vector[shared_ptr[CCasaTable]] & tables)

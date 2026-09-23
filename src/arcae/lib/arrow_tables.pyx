@@ -281,6 +281,42 @@ cdef class Table:
                                                       cjson_cache_size))
         return table
 
+    @staticmethod
+    def from_descriptor(
+        filename: str,
+        ninstances: int = 1,
+        table_desc: Dict | None = None,
+        dminfo: Dict | None = None,
+        nrow: int = 0,
+        cache_size: Union[int, dict, None] = None
+    ) -> Table:
+        """Create a plain CASA table from a table descriptor.
+
+        Unlike :meth:`ms_from_descriptor`, no MeasurementSet columns are
+        merged into the descriptor, so the table contains exactly the
+        columns described by ``table_desc``.
+        """
+        cdef:
+            Table table = Table.__new__(Table)
+            string cfilename = tobytes(filename)
+            size_t cninstances = int(ninstances)
+            size_t cnrow = int(nrow)
+        json_table_desc = json.dumps(table_desc) if table_desc else "{}"
+        json_dminfo = json.dumps(dminfo) if dminfo else "{}"
+
+        cjson_table_desc: string = tobytes(json_table_desc)
+        cjson_dm_info: string = tobytes(json_dminfo)
+        cjson_cache_size: string = tobytes(_normalise_cache_size(cache_size))
+
+        with nogil:
+            table.c_table = GetResultValue(CCreateTable(cfilename,
+                                                        cninstances,
+                                                        cjson_table_desc,
+                                                        cjson_dm_info,
+                                                        cnrow,
+                                                        cjson_cache_size))
+        return table
+
     def to_arrow(
         self,
         index: FullIndex | None = None,

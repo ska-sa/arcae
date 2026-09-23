@@ -350,6 +350,30 @@ Result<SetupNewTable> DefaultMSFactory(const std::string& name,
   return setup;
 }
 
+Result<SetupNewTable> TableFactory(const std::string& name,
+                                   const std::string& json_table_desc,
+                                   const std::string& json_dminfo) {
+  String msg;
+  TableDesc user_td;
+  auto table_desc = JsonParser::parse(json_table_desc).toRecord();
+
+  // Create Table Description object purely from the user table description.
+  // No MeasurementSet columns are merged in, so a caller asking for a plain
+  // CASA table gets exactly the columns they described
+  if (!TableProxy::makeTableDesc(table_desc, user_td, msg)) {
+    return arrow::Status::Invalid("Failed to create Table Description", msg);
+  }
+
+  // Return SetupNewTable object
+  SetupNewTable setup = SetupNewTable(name, user_td, Table::New);
+
+  // Apply any data manager info
+  auto dminfo = JsonParser::parse(json_dminfo).toRecord();
+  setup.bindCreate(dminfo);
+
+  return setup;
+}
+
 }  // namespace arcae
 
 #endif  // ARCAE_DESCRIPTOR_H

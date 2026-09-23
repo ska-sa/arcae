@@ -191,6 +191,37 @@ Result<std::shared_ptr<NewTableProxy>> DefaultMS(const std::string& name,
   });
 }
 
+// Create a plain CASA table from a user supplied table descriptor.
+// Unlike DefaultMS, the table need not be a MeasurementSet or one of its
+// subtables, and no MeasurementSet columns are merged into the descriptor
+Result<std::shared_ptr<NewTableProxy>> CreateTable(const std::string& name,
+                                                   std::size_t ninstances,
+                                                   const std::string& json_table_desc,
+                                                   const std::string& json_dminfo,
+                                                   std::size_t nrow,
+                                                   const std::string& json_cache_size) {
+  if (name.empty()) return Status::Invalid("Table name must not be empty");
+
+  ARROW_ASSIGN_OR_RAISE(auto cache_spec, detail::ParseCacheSizeSpec(json_cache_size));
+
+  auto MakeTable = [name = name, json_table_desc = json_table_desc,
+                    json_dminfo = json_dminfo, nrow = nrow,
+                    cache_spec = cache_spec]() -> Result<std::shared_ptr<TableProxy>> {
+    ARROW_ASSIGN_OR_RAISE(auto setup_new_table,
+                          TableFactory(name, json_table_desc, json_dminfo));
+
+    try {
+      auto proxy = std::make_shared<TableProxy>(Table(setup_new_table, nrow));
+      ARROW_RETURN_NOT_OK(detail::ApplyCacheSizes(*proxy, cache_spec));
+      return proxy;
+    } catch (const casacore::AipsError& error) {
+      return Status::Invalid("Error creating table ", name, ": ", error.what());
+    }
+  };
+
+  return NewTableProxy::Make(std::move(MakeTable), ninstances);
+}
+
 // Execute a TAQL query on the supplied tables
 Result<std::shared_ptr<NewTableProxy>> Taql(
     const std::string& taql, const std::vector<std::shared_ptr<NewTableProxy>>& tables) {

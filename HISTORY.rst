@@ -2,6 +2,14 @@
 History
 =======
 
+X.Y.Z (XX-XX-XXXX)
+------------------
+* Add keyword read/write support: ``getkeywords``/``getcolkeywords``,
+  ``putkeywords``/``putcolkeywords`` and ``removekeyword``/``removecolkeyword``
+* Add ``CreateTable``/``Table.from_descriptor`` for creating plain CASA tables
+  from a table descriptor
+* Add ``NewTableProxy::IsWritable``/``Table.iswritable``
+
 0.5.5 (22-09-2026)
 ------------------
 * Reject slices that ``Selection`` cannot represent, and test the

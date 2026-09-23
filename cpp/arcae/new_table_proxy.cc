@@ -145,7 +145,58 @@ Result<std::size_t> NewTableProxy::nRows() const {
       .MoveResult();
 }
 
+Result<bool> NewTableProxy::IsWritable() const {
+  return itp_
+      ->RunAsync([](const TableProxy& tp) -> bool { return tp.table().isWritable(); })
+      .MoveResult();
+}
+
+Result<std::string> NewTableProxy::GetKeywords(const std::string& column) const {
+  return itp_
+      ->RunAsync([column = column](TableProxy& tp) -> Result<std::string> {
+        if (!column.empty()) ARROW_RETURN_NOT_OK(detail::ColumnExists(tp, column));
+        std::ostringstream oss;
+        JsonOut keyword_json(oss);
+        keyword_json.put(tp.getKeywordSet(column));
+        return oss.str();
+      })
+      .MoveResult();
+}
+
 // Table Write Operations from this point onwards
+
+Result<bool> NewTableProxy::PutKeywords(const std::string& json_keywords,
+                                        const std::string& column) {
+  return itp_->SpawnWriter()
+      ->RunAsync(
+          [json_keywords = json_keywords,
+           column = column](TableProxy& tp) -> Result<bool> {
+            if (!column.empty()) ARROW_RETURN_NOT_OK(detail::ColumnExists(tp, column));
+            detail::MaybeReopenRW(tp);
+            // fromRecord semantics: fields present in the record are defined,
+            // any other existing keywords are left untouched
+            tp.putKeywordSet(column, JsonParser::parse(json_keywords).toRecord());
+            return true;
+          },
+          LockType::Write)
+      .MoveResult();
+}
+
+Result<bool> NewTableProxy::RemoveKeyword(const std::string& keyword,
+                                          const std::string& column) {
+  return itp_->SpawnWriter()
+      ->RunAsync(
+          [keyword = keyword, column = column](TableProxy& tp) -> Result<bool> {
+            if (!column.empty()) ARROW_RETURN_NOT_OK(detail::ColumnExists(tp, column));
+            detail::MaybeReopenRW(tp);
+            // A non-empty keyword name is resolved by name, so the
+            // 0-based keyword index is unused and passed as -1
+            tp.removeKeyword(column, keyword, -1);
+            return true;
+          },
+          LockType::Write)
+      .MoveResult();
+}
 
 Result<bool> NewTableProxy::AddRows(std::size_t nrows) {
   return itp_->SpawnWriter()

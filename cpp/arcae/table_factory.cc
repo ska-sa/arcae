@@ -135,13 +135,20 @@ Result<std::shared_ptr<NewTableProxy>> DefaultMS(const std::string& name,
 
     // MAIN Measurement Set case
     if (usubtable.empty() || usubtable == kMain) {
-      auto ms = MeasurementSet(setup_new_table);
-      // Create the MS default subtables
-      ms.createDefaultSubtables(Table::New);
-      // Create a table proxy
-      auto proxy = std::make_shared<TableProxy>(ms);
-      ARROW_RETURN_NOT_OK(detail::ApplyCacheSizes(*proxy, cache_spec));
-      return proxy;
+      try {
+        auto ms = MeasurementSet(setup_new_table);
+        // Create the MS default subtables
+        ms.createDefaultSubtables(Table::New);
+        // Create a table proxy
+        auto proxy = std::make_shared<TableProxy>(ms);
+        ARROW_RETURN_NOT_OK(detail::ApplyCacheSizes(*proxy, cache_spec));
+        return proxy;
+      } catch (const casacore::AipsError& error) {
+        // This runs on a pool thread: an escaping casacore exception
+        // would terminate the process
+        return Status::Invalid("Error creating Measurement Set ", modname, ": ",
+                               error.what());
+      }
     }
 
     // Open the base Measurement Set table in order to link the subtable
@@ -158,42 +165,47 @@ Result<std::shared_ptr<NewTableProxy>> DefaultMS(const std::string& name,
     // Create the subtable
     std::shared_ptr<TableProxy> subtable = nullptr;
 
-    if (usubtable == MS::keywordName(MS::ANTENNA)) {
-      subtable = std::make_shared<TableProxy>(MSAntenna(setup_new_table));
-    } else if (usubtable == MS::keywordName(MS::DATA_DESCRIPTION)) {
-      subtable = std::make_shared<TableProxy>(MSDataDescription(setup_new_table));
-    } else if (usubtable == MS::keywordName(MS::DOPPLER)) {
-      subtable = std::make_shared<TableProxy>(MSDoppler(setup_new_table));
-    } else if (usubtable == MS::keywordName(MS::FEED)) {
-      subtable = std::make_shared<TableProxy>(MSFeed(setup_new_table));
-    } else if (usubtable == MS::keywordName(MS::FIELD)) {
-      subtable = std::make_shared<TableProxy>(MSField(setup_new_table));
-    } else if (usubtable == MS::keywordName(MS::FLAG_CMD)) {
-      subtable = std::make_shared<TableProxy>(MSFlagCmd(setup_new_table));
-    } else if (usubtable == MS::keywordName(MS::FREQ_OFFSET)) {
-      subtable = std::make_shared<TableProxy>(MSFreqOffset(setup_new_table));
-    } else if (usubtable == MS::keywordName(MS::HISTORY)) {
-      subtable = std::make_shared<TableProxy>(MSHistory(setup_new_table));
-    } else if (usubtable == MS::keywordName(MS::OBSERVATION)) {
-      subtable = std::make_shared<TableProxy>(MSObservation(setup_new_table));
-    } else if (usubtable == kMSV3PhasedArray) {
-      subtable = std::make_shared<TableProxy>(Table(setup_new_table));
-    } else if (usubtable == MS::keywordName(MS::POINTING)) {
-      subtable = std::make_shared<TableProxy>(MSPointing(setup_new_table));
-    } else if (usubtable == MS::keywordName(MS::POLARIZATION)) {
-      subtable = std::make_shared<TableProxy>(MSPolarization(setup_new_table));
-    } else if (usubtable == MS::keywordName(MS::PROCESSOR)) {
-      subtable = std::make_shared<TableProxy>(MSProcessor(setup_new_table));
-    } else if (usubtable == MS::keywordName(MS::SOURCE)) {
-      subtable = std::make_shared<TableProxy>(MSSource(setup_new_table));
-    } else if (usubtable == MS::keywordName(MS::SPECTRAL_WINDOW)) {
-      subtable = std::make_shared<TableProxy>(MSSpectralWindow(setup_new_table));
-    } else if (usubtable == MS::keywordName(MS::STATE)) {
-      subtable = std::make_shared<TableProxy>(MSState(setup_new_table));
-    } else if (usubtable == MS::keywordName(MS::SYSCAL)) {
-      subtable = std::make_shared<TableProxy>(MSSysCal(setup_new_table));
-    } else if (usubtable == MS::keywordName(MS::WEATHER)) {
-      subtable = std::make_shared<TableProxy>(MSWeather(setup_new_table));
+    try {
+      if (usubtable == MS::keywordName(MS::ANTENNA)) {
+        subtable = std::make_shared<TableProxy>(MSAntenna(setup_new_table));
+      } else if (usubtable == MS::keywordName(MS::DATA_DESCRIPTION)) {
+        subtable = std::make_shared<TableProxy>(MSDataDescription(setup_new_table));
+      } else if (usubtable == MS::keywordName(MS::DOPPLER)) {
+        subtable = std::make_shared<TableProxy>(MSDoppler(setup_new_table));
+      } else if (usubtable == MS::keywordName(MS::FEED)) {
+        subtable = std::make_shared<TableProxy>(MSFeed(setup_new_table));
+      } else if (usubtable == MS::keywordName(MS::FIELD)) {
+        subtable = std::make_shared<TableProxy>(MSField(setup_new_table));
+      } else if (usubtable == MS::keywordName(MS::FLAG_CMD)) {
+        subtable = std::make_shared<TableProxy>(MSFlagCmd(setup_new_table));
+      } else if (usubtable == MS::keywordName(MS::FREQ_OFFSET)) {
+        subtable = std::make_shared<TableProxy>(MSFreqOffset(setup_new_table));
+      } else if (usubtable == MS::keywordName(MS::HISTORY)) {
+        subtable = std::make_shared<TableProxy>(MSHistory(setup_new_table));
+      } else if (usubtable == MS::keywordName(MS::OBSERVATION)) {
+        subtable = std::make_shared<TableProxy>(MSObservation(setup_new_table));
+      } else if (usubtable == kMSV3PhasedArray) {
+        subtable = std::make_shared<TableProxy>(Table(setup_new_table));
+      } else if (usubtable == MS::keywordName(MS::POINTING)) {
+        subtable = std::make_shared<TableProxy>(MSPointing(setup_new_table));
+      } else if (usubtable == MS::keywordName(MS::POLARIZATION)) {
+        subtable = std::make_shared<TableProxy>(MSPolarization(setup_new_table));
+      } else if (usubtable == MS::keywordName(MS::PROCESSOR)) {
+        subtable = std::make_shared<TableProxy>(MSProcessor(setup_new_table));
+      } else if (usubtable == MS::keywordName(MS::SOURCE)) {
+        subtable = std::make_shared<TableProxy>(MSSource(setup_new_table));
+      } else if (usubtable == MS::keywordName(MS::SPECTRAL_WINDOW)) {
+        subtable = std::make_shared<TableProxy>(MSSpectralWindow(setup_new_table));
+      } else if (usubtable == MS::keywordName(MS::STATE)) {
+        subtable = std::make_shared<TableProxy>(MSState(setup_new_table));
+      } else if (usubtable == MS::keywordName(MS::SYSCAL)) {
+        subtable = std::make_shared<TableProxy>(MSSysCal(setup_new_table));
+      } else if (usubtable == MS::keywordName(MS::WEATHER)) {
+        subtable = std::make_shared<TableProxy>(MSWeather(setup_new_table));
+      }
+
+    } catch (const casacore::AipsError& error) {
+      return Status::Invalid("Error creating subtable ", usubtable, ": ", error.what());
     }
 
     if (!subtable) {
@@ -201,12 +213,48 @@ Result<std::shared_ptr<NewTableProxy>> DefaultMS(const std::string& name,
     }
 
     // Link the table against the Measurement Set
-    ms.rwKeywordSet().defineTable(physical_subtable, subtable->table());
+    try {
+      ms.rwKeywordSet().defineTable(physical_subtable, subtable->table());
+    } catch (const casacore::AipsError& error) {
+      return Status::Invalid("Error linking subtable ", usubtable, " against ", name,
+                             ": ", error.what());
+    }
     ARROW_RETURN_NOT_OK(detail::ApplyCacheSizes(*subtable, cache_spec));
     return subtable;
   };
 
   return NewTableProxy::Make(std::move(MakeMS), ninstances);
+}
+
+// Create a plain CASA table from a user supplied table descriptor.
+// Unlike DefaultMS, the table need not be a MeasurementSet or one of its
+// subtables, and no MeasurementSet columns are merged into the descriptor
+Result<std::shared_ptr<NewTableProxy>> CreateTable(const std::string& name,
+                                                   std::size_t ninstances,
+                                                   const std::string& json_table_desc,
+                                                   const std::string& json_dminfo,
+                                                   std::size_t nrow,
+                                                   const std::string& json_cache_size) {
+  if (name.empty()) return Status::Invalid("Table name must not be empty");
+
+  ARROW_ASSIGN_OR_RAISE(auto cache_spec, detail::ParseCacheSizeSpec(json_cache_size));
+
+  auto MakeTable = [name = name, json_table_desc = json_table_desc,
+                    json_dminfo = json_dminfo, nrow = nrow,
+                    cache_spec = cache_spec]() -> Result<std::shared_ptr<TableProxy>> {
+    ARROW_ASSIGN_OR_RAISE(auto setup_new_table,
+                          TableFactory(name, json_table_desc, json_dminfo));
+
+    try {
+      auto proxy = std::make_shared<TableProxy>(Table(setup_new_table, nrow));
+      ARROW_RETURN_NOT_OK(detail::ApplyCacheSizes(*proxy, cache_spec));
+      return proxy;
+    } catch (const casacore::AipsError& error) {
+      return Status::Invalid("Error creating table ", name, ": ", error.what());
+    }
+  };
+
+  return NewTableProxy::Make(std::move(MakeTable), ninstances);
 }
 
 // Execute a TAQL query on the supplied tables

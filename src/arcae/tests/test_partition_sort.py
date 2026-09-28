@@ -103,3 +103,57 @@ def test_merge_np_partitions_no_leak():
     del merged
     gc.collect()
     assert all(r() is None for r in refs)
+
+
+def test_merge_np_partitions_non_contiguous():
+    """Strided inputs are merged using their logical values"""
+    a = np.arange(8.0)
+    b = a + 0.5
+    merged = merge_np_partitions([{"A": a[::2]}, {"A": b[::2]}])
+    assert_equal(merged["A"], [0.0, 0.5, 2.0, 2.5, 4.0, 4.5, 6.0, 6.5])
+
+
+def test_merge_np_partitions_non_native_byteorder():
+    """Byte-swapped inputs are merged using their logical values"""
+    swapped = np.dtype(np.int64).newbyteorder("S")
+    p1 = {"A": np.array([1, 3, 5], dtype=swapped)}
+    p2 = {"A": np.array([2, 4, 6], dtype=swapped)}
+    merged = merge_np_partitions([p1, p2])
+    assert_equal(merged["A"], [1, 2, 3, 4, 5, 6])
+
+
+def test_merge_np_partitions_empty_partition():
+    p1 = {"A": np.array([1, 3], dtype=np.int32)}
+    p2 = {"A": np.array([], dtype=np.int32)}
+    p3 = {"A": np.array([2], dtype=np.int32)}
+    merged = merge_np_partitions([p1, p2, p3])
+    assert_equal(merged["A"], [1, 2, 3])
+
+
+def test_merge_np_partitions_key_order():
+    """Arrays are matched across partitions by key, not position"""
+    p1 = {"A": np.array([0, 1]), "B": np.array([0.0, 1.0])}
+    p2 = {"B": np.array([0.5, 2.0]), "A": np.array([0, 1])}
+    merged = merge_np_partitions([p1, p2])
+    assert_equal(merged["A"], [0, 0, 1, 1])
+    assert_equal(merged["B"], [0.0, 0.5, 1.0, 2.0])
+
+
+def test_merge_fail_mismatched_keys():
+    p1 = {"A": np.array([0, 1])}
+    p2 = {"B": np.array([0, 1])}
+    with pytest.raises(ValueError, match="Partitions must have the same keys"):
+        merge_np_partitions([p1, p2])
+
+
+def test_merge_fail_dtype_mismatch():
+    p1 = {"A": np.array([0, 1], dtype=np.int32)}
+    p2 = {"A": np.array([0, 1], dtype=np.int64)}
+    with pytest.raises(ValueError, match="Array dtypes must match"):
+        merge_np_partitions([p1, p2])
+
+
+def test_merge_fail_unsupported_dtype():
+    """Unsupported dtypes are rejected even for a single partition"""
+    with pytest.raises(ValueError, match="Unsupported array type"):
+        merge_np_partitions([{"A": np.array([0, 1], dtype=np.int16)}])

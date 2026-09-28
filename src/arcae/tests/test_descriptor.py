@@ -118,6 +118,15 @@ def test_phased_array_subtable_descriptor():
             "option": 0,
             "valueType": "int",
         },
+        "PHASED_ARRAY_ID": {
+            "comment": "Phased array ID",
+            "dataManagerGroup": "StandardStMan",
+            "dataManagerType": "StandardStMan",
+            "keywords": {},
+            "maxlen": 0,
+            "option": 0,
+            "valueType": "int",
+        },
         "POSITION": {
             "comment": "Position of antenna field",
             "dataManagerGroup": "StandardStMan",

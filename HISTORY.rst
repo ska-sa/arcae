@@ -11,6 +11,7 @@ X.Y.Z (XX-XX-XXXX)
 * Add ``NewTableProxy::IsWritable``/``Table.iswritable``
 * Add the ITRF ``direction`` measure to the ``COORDINATE_AXES`` column of the
   ``MSV3_PHASED_ARRAY`` descriptor
+* Add the ``PHASED_ARRAY_ID`` key column to the ``MSV3_PHASED_ARRAY`` descriptor
 
 0.5.5 (22-09-2026)
 ------------------

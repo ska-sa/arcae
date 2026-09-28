@@ -182,6 +182,7 @@ void AddMeasureMetadata(TableDesc& td, const String& column, const String& type,
 TableDesc PhasedArrayMSDesc(bool complete) {
   TableDesc td;
   td.addColumn(ScalarColumnDesc<Int>("ANTENNA_ID", "Antenna ID"));
+  td.addColumn(ScalarColumnDesc<Int>("PHASED_ARRAY_ID", "Phased array ID"));
   td.addColumn(
       ArrayColumnDesc<Double>("POSITION", "Position of antenna field", IPosition({3})));
   td.addColumn(ArrayColumnDesc<Double>("COORDINATE_AXES", "Local coordinate system",

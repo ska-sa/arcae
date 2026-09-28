@@ -4,6 +4,7 @@ History
 
 X.Y.Z (XX-XX-XXXX)
 ------------------
+* Fix reference leak and input handling in merge_np_partitions (:pr:`244`)
 * Add keyword read/write support: ``getkeywords``/``getcolkeywords``,
   ``putkeywords``/``putcolkeywords`` and ``removekeyword``/``removecolkeyword``
 * Add ``CreateTable``/``Table.from_descriptor`` for creating plain CASA tables

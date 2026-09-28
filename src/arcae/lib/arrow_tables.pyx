@@ -39,6 +39,7 @@ from arcae.lib.arrow_tables cimport (
     CSelection,
     CSelectionBuilder,
     CTaql,
+    MergeType,
     PartitionMerge,
     SafeMultiThreadedWrites,
     IndexType)
@@ -663,21 +664,86 @@ class Configuration(MutableMapping):
         return config.Size()
 
 
+cdef MergeType merge_type(dtype) except *:
+    if dtype == np.int32:
+        return MergeType.INT32
+    elif dtype == np.int64:
+        return MergeType.INT64
+    elif dtype == np.float32:
+        return MergeType.FLOAT32
+    elif dtype == np.float64:
+        return MergeType.FLOAT64
+
+    raise ValueError(f"Unsupported array type {dtype}")
+
+
 def merge_np_partitions(
     partitions: List[Dict[str, np.ndarray]]
 ) -> Dict[str, np.ndarray]:
-    cdef vector[vector[cnp.PyArrayObject*]] partition_arrays
-    cdef vector[cnp.PyArrayObject*] arrays
+    """Merges partitions of lexicographically sorted 1D arrays.
+
+    Each partition maps the same keys to arrays of equal length,
+    sorted lexicographically in key order.
+    """
+    cdef:
+        vector[vector[const void *]] inputs
+        vector[const void *] input_data
+        vector[size_t] nrows
+        vector[MergeType] types
+        vector[void *] outputs
+        cnp.ndarray array
 
     if len(partitions) == 0:
         return {}
 
-    for partition in partitions:
-        for _, array in partition.items():
-            arrays.push_back(<cnp.PyArrayObject*> array)
-        partition_arrays.push_back(move(arrays))
+    keys = list(partitions[0].keys())
+    # Contiguous, aligned, native-endian inputs.
+    # This list keeps them alive for the duration of the merge
+    columns = []
 
-    # Rely on the C++ implementation to drop the GIL
-    PartitionMerge(partition_arrays, &arrays)
-    values = [<cnp.ndarray> array for array in arrays]
-    return dict(zip(partitions[0].keys(), values))
+    for partition in partitions:
+        if partition.keys() != partitions[0].keys():
+            raise ValueError("Partitions must have the same keys")
+
+        arrays = []
+
+        for key in keys:
+            array = np.asarray(partition[key])
+            if array.ndim != 1:
+                raise ValueError("Array must be 1-dimensional")
+            array = np.require(array, requirements=["C", "A"])
+            if not array.dtype.isnative:
+                array = array.astype(array.dtype.newbyteorder("="))
+            if len(arrays) > 0 and array.shape[0] != arrays[0].shape[0]:
+                raise ValueError("Array lengths do not match")
+            arrays.append(array)
+
+        if len(columns) > 0 and any(
+            a.dtype != c.dtype for a, c in zip(arrays, columns[0])
+        ):
+            raise ValueError("Array dtypes must match")
+
+        columns.append(arrays)
+
+    for array in columns[0]:
+        types.push_back(merge_type(array.dtype))
+
+    for arrays in columns:
+        input_data.clear()
+        for array in arrays:
+            input_data.push_back(cnp.PyArray_DATA(array))
+        inputs.push_back(input_data)
+        nrows.push_back(arrays[0].shape[0] if len(arrays) > 0 else 0)
+
+    total_rows = sum(nrows)
+    merged = {}
+
+    for key, column in zip(keys, columns[0]):
+        array = np.empty(total_rows, dtype=column.dtype)
+        outputs.push_back(cnp.PyArray_DATA(array))
+        merged[key] = array
+
+    with nogil:
+        PartitionMerge(inputs, nrows, types, outputs)
+
+    return merged

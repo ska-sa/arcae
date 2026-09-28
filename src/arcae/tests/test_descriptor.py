@@ -100,6 +100,11 @@ def test_phased_array_subtable_creation(tmp_path_factory):
 
     with Table.from_filename(f"{ms}::PHASED_ARRAY") as phased:
         assert phased.nrow() == 1
+        desc = phased.tabledesc()
+        assert desc["COORDINATE_AXES"]["keywords"] == {
+            "MEASINFO": {"Ref": "ITRF", "type": "direction"},
+            "QuantumUnits": ["m", "m", "m"],
+        }
 
 
 def test_phased_array_subtable_descriptor():
@@ -133,7 +138,10 @@ def test_phased_array_subtable_descriptor():
             "comment": "Local coordinate system",
             "dataManagerGroup": "StandardStMan",
             "dataManagerType": "StandardStMan",
-            "keywords": {},
+            "keywords": {
+                "MEASINFO": {"Ref": "ITRF", "type": "direction"},
+                "QuantumUnits": ["m", "m", "m"],
+            },
             "maxlen": 0,
             "ndim": 2,
             "shape": [3, 3],

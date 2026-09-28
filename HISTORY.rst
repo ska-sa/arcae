@@ -9,6 +9,8 @@ X.Y.Z (XX-XX-XXXX)
 * Add ``CreateTable``/``Table.from_descriptor`` for creating plain CASA tables
   from a table descriptor
 * Add ``NewTableProxy::IsWritable``/``Table.iswritable``
+* Add the ITRF ``direction`` measure to the ``COORDINATE_AXES`` column of the
+  ``MSV3_PHASED_ARRAY`` descriptor
 
 0.5.5 (22-09-2026)
 ------------------

@@ -190,6 +190,9 @@ TableDesc PhasedArrayMSDesc(bool complete) {
   td.addColumn(ArrayColumnDesc<Bool>("ELEMENT_FLAG", "Flag of elements in array", 2));
 
   AddMeasureMetadata(td, "POSITION", "position", "ITRF", "m");
+  // The MSv3 definition gives COORDINATE_AXES a DIRECTION measure in m:
+  // each row of the matrix is an ITRF direction vector of the local frame
+  AddMeasureMetadata(td, "COORDINATE_AXES", "direction", "ITRF", "m");
   AddMeasureMetadata(td, "ELEMENT_OFFSET", "position", "ITRF", "m");
 
   if (complete) {

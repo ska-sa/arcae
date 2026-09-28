@@ -1,3 +1,6 @@
+import gc
+import weakref
+
 import numpy as np
 import pytest
 from numpy.testing import assert_equal
@@ -85,3 +88,18 @@ def test_merge_fail_array_length(seed, n, chunk):
 
     with pytest.raises(ValueError, match="Array lengths do not match"):
         merge_np_partitions(partitions)
+
+
+def test_merge_np_partitions_no_leak():
+    """Merged arrays should be freed once no longer referenced"""
+    a = np.sort(np.random.default_rng(42).random(100))
+    partitions = [
+        {"A": a[s : s + 25].copy(), "B": a[s : s + 25].copy()}
+        for s in range(0, 100, 25)
+    ]
+    merged = merge_np_partitions(partitions)
+    assert_equal(merged["A"], a)
+    refs = [weakref.ref(v) for v in merged.values()]
+    del merged
+    gc.collect()
+    assert all(r() is None for r in refs)

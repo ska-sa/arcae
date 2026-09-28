@@ -137,6 +137,9 @@ static int PartitionMerge(const std::vector<std::vector<PyArrayObject*>> & array
     npy_intp out_shape[1] = {output_nrow};
     PyArrayObject * out_array = (PyArrayObject *) PyArray_SimpleNew(1, out_shape, dtype);
     if (out_array == nullptr) {
+      // Release arrays allocated before this failure
+      for (std::size_t i = 0; i < a; ++i) Py_XDECREF((*merged_arrays)[i]);
+      merged_arrays->clear();
       PyErr_SetString(PyExc_ValueError, "Could not allocate output array");
       return -1;
     }

@@ -17,6 +17,7 @@ import numpy as np
 import pyarrow as pa
 
 cimport numpy as cnp
+from cpython.ref cimport Py_DECREF
 
 from pyarrow.includes.common cimport *
 from pyarrow.includes.libarrow cimport *
@@ -668,6 +669,7 @@ def merge_np_partitions(
 ) -> Dict[str, np.ndarray]:
     cdef vector[vector[cnp.PyArrayObject*]] partition_arrays
     cdef vector[cnp.PyArrayObject*] arrays
+    cdef cnp.PyArrayObject * merged
 
     if len(partitions) == 0:
         return {}
@@ -679,5 +681,10 @@ def merge_np_partitions(
 
     # Rely on the C++ implementation to drop the GIL
     PartitionMerge(partition_arrays, &arrays)
-    values = [<cnp.ndarray> array for array in arrays]
+    # PartitionMerge returns new references: casting to an object
+    # adds another, so release the one returned by PartitionMerge
+    values = []
+    for merged in arrays:
+        values.append(<cnp.ndarray> merged)
+        Py_DECREF(<object> merged)
     return dict(zip(partitions[0].keys(), values))

@@ -1,21 +1,34 @@
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <queue>
+#include <type_traits>
 #include <vector>
 
 namespace arcae {
+
+// Floating point types must match NumPy's IEEE 754 float32 and float64
+static_assert(std::numeric_limits<float>::is_iec559 && sizeof(float) == 4);
+static_assert(std::numeric_limits<double>::is_iec559 && sizeof(double) == 8);
 
 // Types supported by PartitionMerge. Expand this with more types as needed
 enum class MergeType { INT32, INT64, FLOAT32, FLOAT64 };
 
 namespace {
 
-// Three-way comparison of lhs[i] and rhs[j]
+// Three-way comparison of lhs[i] and rhs[j].
+// As in NumPy, NaNs sort after all other values
 template <typename T>
 int Compare(const void * lhs, std::size_t i, const void * rhs, std::size_t j) {
   auto lhs_value = static_cast<const T *>(lhs)[i];
   auto rhs_value = static_cast<const T *>(rhs)[j];
+  if constexpr (std::is_floating_point_v<T>) {
+    bool lhs_nan = std::isnan(lhs_value);
+    bool rhs_nan = std::isnan(rhs_value);
+    if (lhs_nan || rhs_nan) return lhs_nan - rhs_nan;
+  }
   return (lhs_value > rhs_value) - (lhs_value < rhs_value);
 }
 
@@ -46,7 +59,7 @@ struct MergeData {
 
 // Performs a k-way merge of lexicographically sorted partitions.
 //
-// inputs[p][a] points to the contiguous, native-endian data of array a
+// inputs[p][a] points to the contiguous, aligned, native-endian data of array a
 // in partition p, which contains nrows[p] elements of types[a].
 // outputs[a] must have space for the sum of nrows elements of types[a].
 // The caller is responsible for validating these invariants and for

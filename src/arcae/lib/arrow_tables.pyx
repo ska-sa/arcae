@@ -697,7 +697,7 @@ def merge_np_partitions(
         return {}
 
     keys = list(partitions[0].keys())
-    # Contiguous, native-endian inputs.
+    # Contiguous, aligned, native-endian inputs.
     # This list keeps them alive for the duration of the merge
     columns = []
 
@@ -711,7 +711,7 @@ def merge_np_partitions(
             array = np.asarray(partition[key])
             if array.ndim != 1:
                 raise ValueError("Array must be 1-dimensional")
-            array = np.ascontiguousarray(array)
+            array = np.require(array, requirements=["C", "A"])
             if not array.dtype.isnative:
                 array = array.astype(array.dtype.newbyteorder("="))
             if len(arrays) > 0 and array.shape[0] != arrays[0].shape[0]:

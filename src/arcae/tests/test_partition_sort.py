@@ -157,3 +157,31 @@ def test_merge_fail_unsupported_dtype():
     """Unsupported dtypes are rejected even for a single partition"""
     with pytest.raises(ValueError, match="Unsupported array type"):
         merge_np_partitions([{"A": np.array([0, 1], dtype=np.int16)}])
+
+
+def test_merge_np_partitions_unaligned():
+    """Unaligned inputs are merged using their logical values"""
+    buf = bytearray(4 * np.dtype(np.int64).itemsize + 1)
+    unaligned = np.frombuffer(buf, dtype=np.int64, offset=1, count=4)
+    unaligned[:] = [1, 3, 5, 7]
+    assert not unaligned.flags.aligned
+    merged = merge_np_partitions([{"A": unaligned}, {"A": np.array([2, 4, 6])}])
+    assert_equal(merged["A"], [1, 2, 3, 4, 5, 6, 7])
+
+
+@pytest.mark.parametrize("dtype", [np.float32, np.float64])
+def test_merge_np_partitions_nan(dtype):
+    """NaNs sort last, consistent with NumPy"""
+    p1 = {"A": np.array([1.0, 3.0, np.nan], dtype=dtype)}
+    p2 = {"A": np.array([2.0, np.nan], dtype=dtype)}
+    merged = merge_np_partitions([p1, p2])
+    assert_equal(merged["A"], np.sort(np.concatenate([p1["A"], p2["A"]])))
+
+
+def test_merge_np_partitions_nan_secondary_key():
+    """Equal NaN primary keys fall through to the secondary key"""
+    p1 = {"A": np.array([0.0, np.nan]), "B": np.array([0, 2])}
+    p2 = {"A": np.array([np.nan, np.nan]), "B": np.array([1, 3])}
+    merged = merge_np_partitions([p1, p2])
+    assert_equal(merged["A"], [0.0, np.nan, np.nan, np.nan])
+    assert_equal(merged["B"], [0, 1, 2, 3])

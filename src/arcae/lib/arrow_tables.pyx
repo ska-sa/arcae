@@ -74,7 +74,7 @@ cdef CSelection build_selection(index: FullIndex = None):
     cdef IndexType count
     cdef IndexType i
     cdef Index vec_index
-    cdef IndexType[:] dim_array_view
+    cdef const IndexType[::1] dim_array_view
 
     if index is None:
         return builder.Build()
@@ -144,7 +144,10 @@ cdef CSelection build_selection(index: FullIndex = None):
                 raise ValueError(
                     f"Multi-dimensional ndarray received "
                     f"as index in dimension {d}")
-            if dim_index.dtype == np.int64:
+            # A const, C-contiguous view accepts read-only arrays and
+            # guarantees the span covers exactly the indexed elements
+            if (dim_index.dtype == np.int64 and dim_index.size > 0
+                    and dim_index.flags.c_contiguous):
                 dim_array_view = dim_index
                 builder.Add(IndexSpan(&dim_array_view[0], dim_array_view.shape[0]))
             else:

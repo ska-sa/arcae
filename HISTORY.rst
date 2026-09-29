@@ -4,6 +4,8 @@ History
 
 X.Y.Z (DD-MM-YYYY)
 ------------------
+* Accept read-only index arrays, and fix strided ``int64`` index arrays
+  silently selecting the wrong rows (:pr:`248`)
 * Fix a deadlock when a ``Table`` is destroyed shortly after ``getcol`` or
   ``putcol``: numpy memory is no longer owned by the C++ layer, and the GIL is
   released while the table closes. ``getcol`` now returns the supplied

@@ -960,3 +960,24 @@ def test_iswritable_taql(sorting_table):
     with arcae.table(sorting_table) as T:
         with Table.from_taql(f"SELECT TIME FROM {sorting_table}", T) as Q:
             assert Q.iswritable() is False
+
+
+def _readonly(a):
+    a.flags.writeable = False
+    return a
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        _readonly(np.array([2, 0], dtype=np.int64)),
+        np.array([2, 1, 0, 0], dtype=np.int64)[::2],
+        _readonly(np.array([2, 1, 0, 0], dtype=np.int64)[::2]),
+        _readonly(np.array([2, 0], dtype=np.int32)),
+    ],
+    ids=["readonly", "strided", "readonly-strided", "readonly-int32"],
+)
+def test_getcol_ndarray_index_layouts(getcol_table, rows):
+    """Read-only and non-contiguous index arrays select the expected rows."""
+    T = arcae.table(getcol_table, readonly=True)
+    assert_array_equal(T.getcol("TIME", index=(rows,)), [2.0, 0.0])

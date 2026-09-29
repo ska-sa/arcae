@@ -2,8 +2,20 @@
 History
 =======
 
-X.Y.Z (XX-XX-XXXX)
+X.Y.Z (DD-MM-YYYY)
 ------------------
+* Fix a deadlock when a ``Table`` is destroyed shortly after ``getcol`` or
+  ``putcol``: numpy memory is no longer owned by the C++ layer, and the GIL is
+  released while the table closes. ``getcol`` now returns the supplied
+  ``result`` array, filled in place (:pr:`247`)
+* Pad ``getcol`` result buffers that are larger than a cell, instead of
+  failing with a casacore ``Slicer`` error. Smaller buffers still truncate
+  the cell (:pr:`247`)
+* Raise ``IndexError`` from ``putcol`` for data larger than an existing cell
+  or selections that do not match the data shape, instead of terminating the
+  process. ``-1`` selection indices now pad writes as they do reads (:pr:`247`)
+* Convert any C++ exception raised on an isolation thread into a Python
+  exception (:pr:`247`)
 * Serialise casacore JSON parsing, whose flex/bison parser is not thread-safe
   (:pr:`246`)
 * Fix reference leak and input handling in merge_np_partitions (:pr:`244`)

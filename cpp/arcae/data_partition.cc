@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <iterator>
+#include <map>
 #include <memory>
 #include <numeric>
 
@@ -423,9 +424,27 @@ Result<DataPartition> DataPartition::Make(const Selection& selection,
     return SpanPair{std::move(disk_span), std::move(mem_span)};
   };
 
+  // Generate disk and memory spans for an unselected dimension in which
+  // only the leading extent elements are read from disk. The remaining
+  // elements have negative disk indices and are not read.
+  // Span pairs are cached on (dim, extent)
+  std::map<std::pair<int, IndexType>, SpanPair> padded_spans;
+  auto GetPaddedSpanPair = [&](auto dim, auto dim_size, auto extent) -> SpanPair {
+    auto key = std::make_pair(int(dim), IndexType(extent));
+    if (auto it = padded_spans.find(key); it != padded_spans.end()) return it->second;
+    Index ids(dim_size, -1);
+    std::iota(std::begin(ids), std::begin(ids) + extent, 0);
+    auto [disk_ids, mem_ids] = MakeSortedIndices(IndexSpan(ids));
+    id_cache.emplace_back(std::move(disk_ids));
+    auto disk_span = IndexSpan(id_cache.back());
+    id_cache.emplace_back(std::move(mem_ids));
+    auto mem_span = IndexSpan(id_cache.back());
+    return padded_spans[key] = SpanPair{std::move(disk_span), std::move(mem_span)};
+  };
+
   // In the fixed case, create disk and memory spans
   // over each dimension in FORTRAN order
-  if (result_shape.IsFixed()) {
+  if (result_shape.IsFixed() && !result_shape.HasCellExtents()) {
     std::vector<SpanPairs> dim_subspans;
     dim_subspans.reserve(result_ndim);
     const auto& shape = result_shape.GetShape();
@@ -443,10 +462,13 @@ Result<DataPartition> DataPartition::Make(const Selection& selection,
     return DataPartition{std::move(chunks), result_shape.GetDataType()};
   }
 
-  // In the varying case, start with the row dimension
+  // In the varying case, or if cell extents vary per row,
+  // start with the row dimension
   auto nrows = result_shape.nRows();
   auto row_dim = result_ndim - 1;
   auto [row_disk_span, row_mem_span] = GetSpanPair(row_dim, nrows);
+  auto fixed_row_shape =
+      result_shape.IsFixed() ? result_shape.GetShape().getFirst(row_dim) : IPosition();
   std::vector<SpanPairs> dim_spans;
   std::vector<bool> contiguous;
 
@@ -455,11 +477,21 @@ Result<DataPartition> DataPartition::Make(const Selection& selection,
     dim_subspans.reserve(result_ndim);
     // The result shape aligns with the row memory indices
     // so we obtain the row shape through indirection
-    const auto& row_shape = result_shape.GetRowShape(row_mem_span[r]);
+    auto row = row_mem_span[r];
+    const auto& row_shape =
+        result_shape.IsFixed() ? fixed_row_shape : result_shape.GetRowShape(row);
 
     // Create span pairs for the secondary dimensions
     for (int dim = 0; dim < row_dim; ++dim) {
-      auto [disk_span, mem_span] = GetSpanPair(dim, row_shape[dim]);
+      auto [disk_span, mem_span] = [&]() {
+        if (result_shape.HasCellExtents()) {
+          auto extent = result_shape.GetCellExtent(row)[dim];
+          if (extent < row_shape[dim]) {
+            return GetPaddedSpanPair(dim, row_shape[dim], extent);
+          }
+        }
+        return GetSpanPair(dim, row_shape[dim]);
+      }();
       ARROW_ASSIGN_OR_RAISE(auto spans, MakeSubSpans(disk_span, mem_span, false));
       dim_subspans.emplace_back(std::move(spans));
     }

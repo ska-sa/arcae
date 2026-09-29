@@ -2,6 +2,7 @@
 #define ARCAE_ISOLATED_TABLE_PROXY_H
 
 #include <atomic>
+#include <exception>
 #include <functional>
 #include <memory>
 #include <stdexcept>
@@ -171,7 +172,7 @@ class IsolatedTableProxy : public std::enable_shared_from_this<IsolatedTableProx
             return std::invoke(functor, *lock->proxy);
           } catch (casacore::AipsError& e) {
             return arrow::Status::Invalid("Unhandled casacore exception: ", e.what());
-          } catch (std::runtime_error& e) {
+          } catch (std::exception& e) {
             return arrow::Status::Invalid("Unhandled exception: ", e.what());
           }
         });
@@ -198,7 +199,7 @@ class IsolatedTableProxy : public std::enable_shared_from_this<IsolatedTableProx
             return std::invoke(functor, *lock->proxy);
           } catch (casacore::AipsError& e) {
             return arrow::Status::Invalid("Unhandled casacore exception: ", e.what());
-          } catch (std::runtime_error& e) {
+          } catch (std::exception& e) {
             return arrow::Status::Invalid("Unhandled exception: ", e.what());
           }
         });
@@ -223,7 +224,7 @@ class IsolatedTableProxy : public std::enable_shared_from_this<IsolatedTableProx
             return std::invoke(fn, result, *lock->proxy);
           } catch (casacore::AipsError& e) {
             return arrow::Status::Invalid("Unhandled casacore exception: ", e.what());
-          } catch (std::runtime_error& e) {
+          } catch (std::exception& e) {
             return arrow::Status::Invalid("Unhandled exception: ", e.what());
           }
         },
@@ -250,7 +251,7 @@ class IsolatedTableProxy : public std::enable_shared_from_this<IsolatedTableProx
             return std::invoke(fn, result, *lock->proxy);
           } catch (casacore::AipsError& e) {
             return arrow::Status::Invalid("Unhandled casacore exception: ", e.what());
-          } catch (std::runtime_error& e) {
+          } catch (std::exception& e) {
             return arrow::Status::Invalid("Unhandled exception: ", e.what());
           }
         },
@@ -281,7 +282,7 @@ class IsolatedTableProxy : public std::enable_shared_from_this<IsolatedTableProx
             return std::invoke(functor, *lock->proxy);
           } catch (casacore::AipsError& e) {
             return arrow::Status::Invalid("Unhandled casacore exception: ", e.what());
-          } catch (std::runtime_error& e) {
+          } catch (std::exception& e) {
             return arrow::Status::Invalid("Unhandled exception: ", e.what());
           }
         });
@@ -309,7 +310,7 @@ class IsolatedTableProxy : public std::enable_shared_from_this<IsolatedTableProx
             return std::invoke(functor, *lock->proxy);
           } catch (casacore::AipsError& e) {
             return arrow::Status::Invalid("Unhandled casacore exception: ", e.what());
-          } catch (std::runtime_error& e) {
+          } catch (std::exception& e) {
             return arrow::Status::Invalid("Unhandled exception: ", e.what());
           }
         });

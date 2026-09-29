@@ -24,6 +24,7 @@
 
 using ::arcae::GetArrayColumn;
 using ::arcae::GetScalarColumn;
+using ::arcae::detail::IndexType;
 using ::arcae::detail::ResultShapeData;
 using ::arcae::detail::Selection;
 using ::arcae::detail::SelectionBuilder;
@@ -51,6 +52,18 @@ static constexpr std::size_t knchan = 4;
 static constexpr std::size_t kncorr = 2;
 
 namespace {
+
+// Create a zeroed complex result array of C-ordered shape (nrow, nchan, ncorr)
+arrow::Result<std::shared_ptr<arrow::Array>> MakeComplexResult(std::size_t nrow,
+                                                               std::size_t nchan,
+                                                               std::size_t ncorr) {
+  std::shared_ptr<arrow::Array> result;
+  std::vector<float> values(nrow * nchan * ncorr * 2, 0.0);
+  arrow::ArrayFromVector<arrow::FloatType>(arrow::float32(), values, &result);
+  ARROW_ASSIGN_OR_RAISE(result, arrow::FixedSizeListArray::FromArrays(result, 2));
+  ARROW_ASSIGN_OR_RAISE(result, arrow::FixedSizeListArray::FromArrays(result, ncorr));
+  return arrow::FixedSizeListArray::FromArrays(result, nchan);
+}
 
 class ResultShapeTest : public ::testing::Test {
  protected:
@@ -234,6 +247,105 @@ TEST_F(ResultShapeTest, NegateSparseVariable) {
   }
 }
 
+TEST_F(ResultShapeTest, NegatePadsAndTruncates) {
+  auto fixed = GetArrayColumn<Complex>(table_proxy_.table(), "MODEL_DATA");
+  auto var = GetArrayColumn<Complex>(table_proxy_.table(), "VAR_DATA");
+  auto var_fixed = GetArrayColumn<Complex>(table_proxy_.table(), "VAR_FIXED_DATA");
+
+  struct NegateResult {
+    ResultShapeData shape_data;
+    Selection selection;
+  };
+
+  auto Negate = [](const auto& column, std::size_t nrow, std::size_t nchan,
+                   std::size_t ncorr,
+                   const Selection& sel) -> arrow::Result<NegateResult> {
+    ARROW_ASSIGN_OR_RAISE(auto result, MakeComplexResult(nrow, nchan, ncorr));
+    ARROW_ASSIGN_OR_RAISE(auto shape_data, ResultShapeData::FromArray(column, result));
+    ARROW_ASSIGN_OR_RAISE(auto selection,
+                          shape_data.NegateMissingSelectedRows(column, sel));
+    return NegateResult{std::move(shape_data), std::move(selection)};
+  };
+
+  // Get the FORTRAN ordered selection indices in dimension dim, if any
+  auto Ids = [](const Selection& sel, std::size_t dim) -> std::vector<IndexType> {
+    if (auto res = sel.FSpan(dim, 3); res.ok()) {
+      auto span = res.ValueOrDie();
+      return {std::begin(span), std::end(span)};
+    }
+    return {};
+  };
+
+  using Ids_ = std::vector<IndexType>;
+  auto rows = SelectionBuilder::FromInit({{0, 1}});
+  auto no_rows = Selection();
+
+  for (const auto& column : {fixed, var_fixed}) {
+    for (const auto& sel : {no_rows, rows}) {
+      std::size_t nrow = sel.HasRowSpan() ? 2 : knrow;
+
+      // Exact and undersized results leave the selection untouched
+      for (auto [nchan, ncorr] :
+           {std::pair{knchan, kncorr}, std::pair{knchan - 1, kncorr},
+            std::pair{knchan, kncorr - 1}}) {
+        ASSERT_OK_AND_ASSIGN(auto r, Negate(column, nrow, nchan, ncorr, sel));
+        EXPECT_FALSE(r.shape_data.HasCellExtents());
+        EXPECT_EQ(Ids(r.selection, 0), Ids(sel, 0));
+        EXPECT_EQ(Ids(r.selection, 1), Ids(sel, 1));
+        EXPECT_EQ(Ids(r.selection, 2), Ids(sel, 2));
+      }
+
+      // Oversized results pad the selection with -1
+      ASSERT_OK_AND_ASSIGN(auto r, Negate(column, nrow, knchan + 2, kncorr + 1, sel));
+      EXPECT_FALSE(r.shape_data.HasCellExtents());
+      EXPECT_EQ(Ids(r.selection, 0), Ids_({0, 1, -1}));
+      EXPECT_EQ(Ids(r.selection, 1), Ids_({0, 1, 2, 3, -1, -1}));
+      EXPECT_EQ(Ids(r.selection, 2), Ids(sel, 2));
+    }
+
+    // Explicit selections are preserved, other dimensions are padded
+    auto chan_sel = SelectionBuilder::FromInit({{0, 1}, {0, 2}});
+    ASSERT_OK_AND_ASSIGN(auto r, Negate(column, 2, 2, kncorr + 1, chan_sel));
+    EXPECT_EQ(Ids(r.selection, 0), Ids_({0, 1, -1}));
+    EXPECT_EQ(Ids(r.selection, 1), Ids_({0, 2}));
+    EXPECT_EQ(Ids(r.selection, 2), Ids_({0, 1}));
+
+    // Explicit -1 padding still works and selections must fit the cell
+    auto pad_sel = SelectionBuilder::FromInit({{0, 1}, {0, 1, 2, 3, -1, -1}});
+    ASSERT_OK(Negate(column, 2, knchan + 2, kncorr, pad_sel));
+    auto bad_sel = SelectionBuilder::FromInit({{0, 1}, {0, int(knchan)}});
+    ASSERT_RAISES(IndexError, Negate(column, 2, 2, kncorr, bad_sel));
+  }
+
+  // Variably shaped rows 2 and 7 share shape (4, 2),
+  // so the selection is padded
+  ASSERT_OK_AND_ASSIGN(auto r,
+                       Negate(var, 2, 3, 6, SelectionBuilder::FromInit({{2, 7}})));
+  EXPECT_FALSE(r.shape_data.HasCellExtents());
+  EXPECT_EQ(Ids(r.selection, 0), Ids_({0, 1, 2, 3, -1, -1}));
+  EXPECT_EQ(Ids(r.selection, 1), Ids_({0, 1, -1}));
+  EXPECT_EQ(Ids(r.selection, 2), Ids_({2, 7}));
+
+  // Rows 0, 1 and 2 have shapes (3, 2), (4, 1) and (4, 2),
+  // so the cell extents vary per row and the selection is untouched
+  auto sel = SelectionBuilder::FromInit({{0, 1, 2}});
+  ASSERT_OK_AND_ASSIGN(r, Negate(var, 3, 2, 4, sel));
+  ASSERT_TRUE(r.shape_data.HasCellExtents());
+  EXPECT_EQ(r.shape_data.GetCellExtent(0), IPos({3, 2}));
+  EXPECT_EQ(r.shape_data.GetCellExtent(1), IPos({4, 1}));
+  EXPECT_EQ(r.shape_data.GetCellExtent(2), IPos({4, 2}));
+  EXPECT_EQ(Ids(r.selection, 0), Ids_{});
+  EXPECT_EQ(Ids(r.selection, 1), Ids_{});
+  EXPECT_EQ(Ids(r.selection, 2), Ids_({0, 1, 2}));
+
+  // Truncating and padding in different dimensions
+  ASSERT_OK_AND_ASSIGN(r, Negate(var, 3, 1, 4, sel));
+  ASSERT_TRUE(r.shape_data.HasCellExtents());
+  EXPECT_EQ(r.shape_data.GetCellExtent(0), IPos({3, 1}));
+  EXPECT_EQ(r.shape_data.GetCellExtent(1), IPos({4, 1}));
+  EXPECT_EQ(r.shape_data.GetCellExtent(2), IPos({4, 1}));
+}
+
 TEST_F(ResultShapeTest, ReadVariableSelection) {
   auto var = GetArrayColumn<Complex>(table_proxy_.table(), "VAR_DATA");
   auto sel = SelectionBuilder::FromInit({{0, 1}});
@@ -306,7 +418,12 @@ TEST_F(ResultShapeTest, WriteVariable) {
                                          [[[6, 6], [7, 7], [8, 8]],
                                           [[9, 9], [10, 10], [11, 11]]]])"));
 
-  ASSERT_OK_AND_ASSIGN(auto shape_data, ResultShapeData::MakeWrite(var, data));
+  // Rows 0 and 1 have shapes (3, 2) and (4, 1), too small for the data
+  ASSERT_RAISES(IndexError, ResultShapeData::MakeWrite(var, data));
+
+  // Rows 2 and 7 have shape (4, 2)
+  auto rows = SelectionBuilder::FromInit({{2, 7}});
+  ASSERT_OK_AND_ASSIGN(auto shape_data, ResultShapeData::MakeWrite(var, data, rows));
   EXPECT_EQ(shape_data.GetName(), "VAR_DATA");
   EXPECT_TRUE(shape_data.IsFixed());
   EXPECT_EQ(shape_data.nDim(), 3);
@@ -323,7 +440,7 @@ TEST_F(ResultShapeTest, WriteVariable) {
                                          [[[6, 6], [7, 7], [8, 8]],
                                           [[9, 9], [10, 10], [11, 11]]]])"));
 
-  ASSERT_OK_AND_ASSIGN(shape_data, ResultShapeData::MakeWrite(var, data));
+  ASSERT_OK_AND_ASSIGN(shape_data, ResultShapeData::MakeWrite(var, data, rows));
   EXPECT_EQ(shape_data.GetName(), "VAR_DATA");
   EXPECT_FALSE(shape_data.IsFixed());
   EXPECT_EQ(shape_data.nDim(), 3);
@@ -333,6 +450,39 @@ TEST_F(ResultShapeTest, WriteVariable) {
   EXPECT_EQ(shape_data.GetRowShape(0), IPos({2, 2}));
   EXPECT_EQ(shape_data.GetRowShape(1), IPos({3, 2}));
   ASSERT_OK_AND_ASSIGN(offsets, shape_data.GetOffsets());
+}
+
+TEST_F(ResultShapeTest, WriteSelectionSize) {
+  auto fixed = GetArrayColumn<Complex>(table_proxy_.table(), "MODEL_DATA");
+  auto var = GetArrayColumn<Complex>(table_proxy_.table(), "VAR_DATA");
+
+  // (2 rows, 2 chans, 1 corr) complex data
+  ASSERT_OK_AND_ASSIGN(auto data, MakeComplexResult(2, 2, 1));
+  auto rows = std::initializer_list<int>{2, 7};
+
+  for (const auto& column : {fixed, var}) {
+    // Selection sizes match the data, including -1 entries
+    ASSERT_OK(ResultShapeData::MakeWrite(
+        column, data, SelectionBuilder::FromInit({rows, {0, 1}, {0}})));
+    ASSERT_OK(ResultShapeData::MakeWrite(column, data,
+                                         SelectionBuilder::FromInit({rows, {-1, 1}})));
+    // Selection sizes differ from the data
+    ASSERT_RAISES(IndexError, ResultShapeData::MakeWrite(
+                                  column, data, SelectionBuilder::FromInit({rows, {0}})));
+    ASSERT_RAISES(IndexError,
+                  ResultShapeData::MakeWrite(
+                      column, data, SelectionBuilder::FromInit({rows, {0, 1, 2}})));
+    ASSERT_RAISES(IndexError,
+                  ResultShapeData::MakeWrite(
+                      column, data, SelectionBuilder::FromInit({rows, {0, 1}, {0, 1}})));
+  }
+
+  // Variably shaped data is checked row by row
+  auto dtype = arrow::list(arrow::list(arrow::list(arrow::float32())));
+  ASSERT_OK_AND_ASSIGN(data, ArrayFromJSONString(dtype, R"([[[[0, 0]], [[1, 1]]],
+                                                           [[[2, 2]]]])"));
+  ASSERT_RAISES(IndexError, ResultShapeData::MakeWrite(
+                                var, data, SelectionBuilder::FromInit({rows, {0, 1}})));
 }
 
 }  // namespace

@@ -7,6 +7,7 @@ vcpkg_from_github(
     SHA512 41d4463432033995d0e85632faa07c2fedc820a810f593d2aad5144706a41482296200730fc0b99d5ad962b7ffbfb55c0b67a123d0f49f0e8f774cfbd8d9c9f4
     PATCHES
         001-casacore-cmake.patch
+        002-json-parser-mutex.patch
 )
 
 vcpkg_find_acquire_program(FLEX)

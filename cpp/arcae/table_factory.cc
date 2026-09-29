@@ -67,6 +67,43 @@ static constexpr char kMain[] = "MAIN";
 static constexpr char kMSV3PhasedArray[] = "MSV3_PHASED_ARRAY";
 static constexpr char kPhasedArray[] = "PHASED_ARRAY";
 
+// arcae confines each casacore Table to its own thread and acquires/releases a
+// lock around every operation (see IsolatedTableProxy::MaybeLockAndFinalise).
+// This requires user locking: under auto locking casacore retains the lock
+// across operations, and a retained reader lock on one instance deadlocks the
+// (now in-process) multi-reader/single-writer coordination that serialises a
+// writer on instance 0 against readers on the others. Coerce to a user lock.
+void CoerceToUserLocking(casacore::Record& lock_record) {
+  lock_record.define("option", "user");
+}
+
+// Open an existing table on the calling isolation thread
+Result<std::shared_ptr<TableProxy>> OpenProxy(const std::string& filename, bool readonly,
+                                              const std::string& json_lockoptions,
+                                              const detail::CacheSizeSpec& cache_spec) {
+  try {
+    auto lock_record = JsonParser::parse(json_lockoptions).toRecord();
+    CoerceToUserLocking(lock_record);
+    auto proxy =
+        std::make_shared<TableProxy>(filename, lock_record, Table::TableOption::Old);
+    if (!readonly) proxy->reopenRW();
+    ARROW_RETURN_NOT_OK(detail::ApplyCacheSizes(*proxy, cache_spec));
+    return proxy;
+  } catch (std::exception& e) {
+    return Status::Invalid(e.what());
+  }
+}
+
+// Reopens instances of a table that has already been opened or created.
+// Created tables are reopened with default (user) locking.
+detail::ReopenFn MakeReopener(std::string json_lockoptions,
+                              detail::CacheSizeSpec cache_spec) {
+  return [json_lockoptions = std::move(json_lockoptions),
+          cache_spec = std::move(cache_spec)](const std::string& name, bool writable) {
+    return OpenProxy(name, !writable, json_lockoptions, cache_spec);
+  };
+}
+
 }  // namespace
 
 Result<std::shared_ptr<NewTableProxy>> OpenTable(const std::string& filename,
@@ -75,24 +112,15 @@ Result<std::shared_ptr<NewTableProxy>> OpenTable(const std::string& filename,
                                                  const std::string& json_cache_size) {
   ARROW_ASSIGN_OR_RAISE(auto cache_spec, detail::ParseCacheSizeSpec(json_cache_size));
   return NewTableProxy::Make(
-      [&filename, &readonly, &json_lockoptions,
-       &cache_spec]() -> Result<std::shared_ptr<TableProxy>> {
-        auto lock_record = JsonParser::parse(json_lockoptions).toRecord();
-        try {
-          auto proxy = std::make_shared<TableProxy>(filename, lock_record,
-                                                    Table::TableOption::Old);
-          if (!readonly) proxy->reopenRW();
-          ARROW_RETURN_NOT_OK(detail::ApplyCacheSizes(*proxy, cache_spec));
-          return proxy;
-        } catch (std::exception& e) {
-          return Status::Invalid(e.what());
-        }
+      [&filename, &readonly, &json_lockoptions, &cache_spec]() {
+        return OpenProxy(filename, readonly, json_lockoptions, cache_spec);
       },
-      ninstances);
+      ninstances, MakeReopener(json_lockoptions, cache_spec));
 }
 
 Result<std::shared_ptr<NewTableProxy>> DefaultMS(const std::string& name,
                                                  const std::string& subtable,
+                                                 std::size_t ninstances,
                                                  const std::string& json_table_desc,
                                                  const std::string& json_dminfo,
                                                  const std::string& json_cache_size) {
@@ -111,12 +139,16 @@ Result<std::shared_ptr<NewTableProxy>> DefaultMS(const std::string& name,
     modname.append(physical_subtable);
   }
 
-  ARROW_ASSIGN_OR_RAISE(
-      auto setup_new_table,
-      DefaultMSFactory(modname, usubtable, json_table_desc, json_dminfo));
   ARROW_ASSIGN_OR_RAISE(auto cache_spec, detail::ParseCacheSizeSpec(json_cache_size));
 
-  return NewTableProxy::Make([&]() -> Result<std::shared_ptr<TableProxy>> {
+  auto MakeMS = [name = name, modname = modname, usubtable = usubtable,
+                 physical_subtable = physical_subtable, json_table_desc = json_table_desc,
+                 json_dminfo = json_dminfo,
+                 cache_spec = cache_spec]() -> Result<std::shared_ptr<TableProxy>> {
+    ARROW_ASSIGN_OR_RAISE(
+        auto setup_new_table,
+        DefaultMSFactory(modname, usubtable, json_table_desc, json_dminfo));
+
     // MAIN Measurement Set case
     if (usubtable.empty() || usubtable == kMain) {
       try {
@@ -205,7 +237,10 @@ Result<std::shared_ptr<NewTableProxy>> DefaultMS(const std::string& name,
     }
     ARROW_RETURN_NOT_OK(detail::ApplyCacheSizes(*subtable, cache_spec));
     return subtable;
-  });
+  };
+
+  return NewTableProxy::Make(std::move(MakeMS), ninstances,
+                             MakeReopener("{}", std::move(cache_spec)));
 }
 
 // Create a plain CASA table from a user supplied table descriptor.
@@ -236,7 +271,8 @@ Result<std::shared_ptr<NewTableProxy>> CreateTable(const std::string& name,
     }
   };
 
-  return NewTableProxy::Make(std::move(MakeTable), ninstances);
+  return NewTableProxy::Make(std::move(MakeTable), ninstances,
+                             MakeReopener("{}", std::move(cache_spec)));
 }
 
 // Execute a TAQL query on the supplied tables

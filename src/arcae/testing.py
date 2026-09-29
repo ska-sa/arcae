@@ -71,7 +71,7 @@ def sanity():
         dir = stack.enter_context(TemporaryDirectory(prefix="arcae-sanity"))
         ms = os.path.join(dir, "sanity.ms")
         T = stack.enter_context(
-            Table.ms_from_descriptor(ms, "MAIN", TABLE_DESC, DMINFO)
+            Table.ms_from_descriptor(ms, "MAIN", table_desc=TABLE_DESC, dminfo=DMINFO)
         )
         T.addrows(time.size)
         T.putcol("TIME", time)

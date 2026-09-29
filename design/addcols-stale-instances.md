@@ -1,7 +1,6 @@
 # Stale sibling instances after `AddColumns`
 
-Status: fixes 1 and 2 implemented; fix 3 proposed. Target branch: `0.4.0-dev`
-(MRSW write support).
+Status: implemented. Target branch: `0.4.0-dev` (MRSW write support).
 Found while migrating dask-ms off python-casacore (ratt-ru/dask-ms#384).
 Related: ska-sa/arcae#241.
 
@@ -145,7 +144,7 @@ which is why python-casacore never hit it.
   handle registry after `addcols` and drops every cached table for that path
   plus anything derived from it. Fix 3 below would let that be deleted.
 
-## Proposed changes
+## Changes
 
 ### 1. Refresh sibling instances after a structural change
 
@@ -203,62 +202,64 @@ the old proxy.
 `removeColumn` is the same class of bug, but arcae does not expose column
 removal. Keyword writes do not change the column count and are unaffected.
 
-A `Spawn`ed (TAQL) table's own instances are not refreshed: its reference
-tables are over the stale root and cannot lock or close once reads reach its
-siblings. Fix 3 is what handles them.
+A `Spawn`ed (TAQL) table's own instances are not refreshed here; fix 3
+repairs them on next use.
 
 ### 2. Do not leak an instance whose close fails
 
 Implemented. `TableProxy::close()` flushes internally, so splitting `flush()`
 and `close()` into separate `try` blocks (the earlier proposal) would still
 throw from `close()` and release nothing. `Close()` now drops the table, as in
-fix 1, whenever flushing or closing throws, and still reports the error.
+fix 1, whenever flushing or closing throws. It reports the error unless it
+is the column-count mismatch: a stale instance has nothing to flush, since the
+instance that writes flushes as it releases each write lock, so that is the
+expected state of an instance nobody used after a column was added.
 
-### 3. Lazy self-heal in `MaybeLockAndFinalise`
+### 3. Lazy self-heal on lock
 
-The strategic fix, and the only one that covers every case.
+Implemented. Every task an ITP dispatches (`RunAsync`, `RunSync`, `Then`, and
+the source lock `Spawn` takes) now locks its instance through
+`IsolatedTableProxy::LockInstance`. When the lock throws the column-count
+mismatch (`IsColumnCountMismatch`), or the forced resync that follows a read
+lock reports it (`MaybeLockAndFinalise::stale`), the instance is refreshed
+with `RefreshInstance` and locked again, once. Any other error, or a second
+mismatch, behaves as before. Only the lock is retried, never the task's
+functor, so a write is never repeated.
 
-In `MaybeLockAndFinalise`
-([`cpp/arcae/isolated_table_proxy.h:46`](../cpp/arcae/isolated_table_proxy.h)),
-catch the column-count `TableError` out of `proxy->lock()` / `proxy->resync()`,
-rebuild that one instance from `factory_`, and retry once.
+This covers what fix 1 cannot: another `arcae.table` handle on the same path,
+another process adding a column, and the writer instance itself going stale
+(its `lock()` throws on the mismatch before it has changed anything to flush,
+so refreshing it is safe). The ITP returned by `SpawnWriter` carries its
+parent's refresh recipe for this reason.
 
-This subsumes fix 1 — each instance repairs itself on next use, so
-`AddColumns` needs no special casing — and additionally handles:
+**Derived tables are rebuilt, not re-queried.** A `Spawn`ed ITP records the
+root ITP it derives from (`root_`). `RefreshInstance` on one of its instances:
 
-- another **process** adding a column, which nothing else can address;
-- other arcae tables in this process, i.e. the readers that dask-ms currently
-  invalidates by hand.
+1. takes the instance's root row numbers (`Table::rowNumbers()`) and column
+   names, then drops it;
+2. locks the root ITP's instance on the same thread, which refreshes that too
+   if it is stale;
+3. rebuilds the selection as `root(rows).project(columns)`.
 
-Costs and cares:
+A `RefTable` always refers to the root directly, even when built from another
+reference table, so this needs nothing from intermediate tables. Re-running
+the TAQL query was rejected because the table may have changed since: a
+re-evaluated `WHERE` could select rows that the other instances, built before
+the change, do not hold. A derived table that is not a selection over its
+source (a TAQL result computed into a table of its own), or that renames
+columns, returns `NotImplemented`. The first cannot go stale on account of its
+source anyway.
 
-- It sits in the hot path, inside a `try`/`catch` that already exists.
-- The retry must re-fetch the proxy from the pool slot rather than reuse its
-  local `shared_ptr`. The old proxy stays alive through that `shared_ptr`, so
-  the swap is safe, but a stale local reference would defeat the point.
-- Distinguish the column-count error specifically. Retrying every `TableError`
-  would turn genuine failures into infinite loops.
-
-## Recommended order
-
-1. **Fix 2**: done.
-2. **Fix 1**: done. Unblocks `addcols` on multi-instance tables.
-3. **Fix 3**: when the goal is to delete dask-ms's `CasaTable.invalidate`,
-   and to repair TAQL tables derived from a table that gained a column. The
-   retry should reuse `RefreshProxy` from `isolated_table_proxy.cc`; for a
-   spawned ITP it must refresh the parent's slot on the same thread and then
-   re-run the spawn functor.
+The column-count error is recognised by its message, which is all casacore
+provides. It sits on the path of every dispatched task, but only as a check in
+a `catch` block that already existed, plus a `std::unique_ptr` for the lock.
 
 ## Downstream
 
-dask-ms `replace-python-casacore-with-arcae` currently carries
-`CasaTable.invalidate`, called from `_updated_table` immediately after
-`addcols`. It walks the live-handle registry, closes and evicts every cached
-table for that path plus anything derived from it (TAQL queries over it), so
-each handle reopens on next access. It deliberately includes the handle that
-performed the add, precisely because of the sibling-instance problem described
-here.
+dask-ms `replace-python-casacore-with-arcae` carries `CasaTable.invalidate`,
+called from `_updated_table` immediately after `addcols`. It walks the
+live-handle registry and closes and evicts every cached table for that path
+plus anything derived from it, so that each handle reopens on next access.
 
-That workaround is only sound because `_updated_table` runs while the write
-graph is being built, with no tasks in flight. It cannot address the
-cross-process case. Fix 3 removes the need for it entirely.
+With fix 3 every handle, derived table and process repairs itself on next use,
+so `invalidate` can be deleted.

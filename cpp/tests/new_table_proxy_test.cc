@@ -489,6 +489,50 @@ TEST_F(FixedTableProxyTest, AddColumnsRefreshesInstances) {
   EXPECT_TRUE(closed);
 }
 
+// A second handle's instances, and its writer, refresh themselves on next
+// use after the first handle adds a column
+TEST_F(FixedTableProxyTest, AddColumnsThroughAnotherHandle) {
+  ASSERT_OK_AND_ASSIGN(auto a, arcae::OpenTable(table_name_, knInstances, false));
+  ASSERT_OK_AND_ASSIGN(auto b, arcae::OpenTable(table_name_, knInstances, false));
+  ASSERT_OK(b->GetColumn("TIME"));
+
+  auto column_desc = R"""(
+  {"NEWCOL": {"dataManagerType": "StandardStMan", "valueType": "double"}}
+  )""";
+  ASSERT_OK(a->AddColumns(column_desc, "{}"));
+
+  std::vector<double> values(knrow);
+  std::iota(values.begin(), values.end(), 0.0);
+  std::shared_ptr<arrow::Array> data;
+  arrow::ArrayFromVector<arrow::DoubleType, double>(values, &data);
+  // Through b's writer, which is as stale as its readers
+  ASSERT_OK(b->PutColumn("NEWCOL", data));
+
+  constexpr std::size_t kThreads = 4 * knInstances;
+  std::vector<arrow::Status> statuses(kThreads);
+  std::vector<std::thread> threads;
+  for (std::size_t t = 0; t < kThreads; ++t) {
+    threads.emplace_back([&, t]() {
+      for (int i = 0; i < 10; ++i) {
+        auto result = b->GetColumn("NEWCOL");
+        if (!result.ok()) {
+          statuses[t] = result.status();
+          return;
+        }
+        if (!result.ValueUnsafe()->Equals(*data)) {
+          statuses[t] = arrow::Status::Invalid("NEWCOL has the wrong values");
+          return;
+        }
+      }
+    });
+  }
+  for (auto& thread : threads) thread.join();
+  for (const auto& status : statuses) EXPECT_OK(status);
+
+  ASSERT_OK(b->Close());
+  ASSERT_OK(a->Close());
+}
+
 // Without a way to reopen instances, AddColumns reports that it could not
 // refresh them rather than leaving them silently stale
 TEST_F(FixedTableProxyTest, AddColumnsWithoutReopen) {

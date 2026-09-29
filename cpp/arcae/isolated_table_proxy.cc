@@ -4,14 +4,20 @@
 #include <cstddef>
 #include <limits>
 #include <memory>
+#include <string_view>
 
 #include <arrow/status.h>
 #include <arrow/util/future.h>
 #include <arrow/util/logging.h>
 #include <arrow/util/thread_pool.h>
 
+#include <casacore/casa/Containers/Block.h>
+#include <casacore/casa/Exceptions/Error.h>
 #include <casacore/tables/Tables/PlainTable.h>
+#include <casacore/tables/Tables/RowNumbers.h>
+#include <casacore/tables/Tables/Table.h>
 #include <casacore/tables/Tables/TableCache.h>
+#include <casacore/tables/Tables/TableDesc.h>
 #include <casacore/tables/Tables/TableProxy.h>
 
 using ::arrow::Future;
@@ -24,6 +30,8 @@ using ::casacore::TableProxy;
 namespace arcae {
 namespace detail {
 namespace {
+
+using RowNumbersPtr = std::shared_ptr<casacore::RowNumbers>;
 
 // Release the table held by tp without flushing it. Must run on the
 // isolation thread that owns tp: destroying a PlainTable removes it from
@@ -62,6 +70,11 @@ Status CloseProxy(TableProxy& tp) {
     return Status::OK();
   } catch (const std::exception& e) {
     DropTable(tp);
+    // An out of date instance has nothing to lose: writes go through an
+    // instance that flushes as it releases each write lock. So this is the
+    // expected state of an instance that was never used after another
+    // handle added a column, not a failure.
+    if (IsColumnCountMismatch(e)) return Status::OK();
     return Status::Invalid("Error closing table: ", e.what());
   }
 }
@@ -101,9 +114,102 @@ Status RefreshProxy(std::shared_ptr<TableProxy>& proxy, const ReopenFn& reopen) 
   return Status::OK();
 }
 
+// Rebuild a derived (reference table) instance over the root table's
+// instance on the same isolation thread, keeping the rows and columns it
+// selected. The caller holds a read lock on root, a current root instance.
+Status RebuildDerived(std::shared_ptr<TableProxy>& proxy, const RowNumbersPtr& rows,
+                      const casacore::Vector<casacore::String>& columns,
+                      const TableProxy& root) {
+  try {
+    const auto& root_table = root.table();
+    const auto& root_desc = root_table.tableDesc();
+    casacore::Block<casacore::String> names(columns.size());
+    for (std::size_t c = 0; c < columns.size(); ++c) {
+      // TAQL can rename columns, which a projection of the root cannot express
+      if (!root_desc.isColumn(columns[c])) {
+        return Status::NotImplemented("Refreshing a derived table with column ",
+                                      columns[c], ", which is not in its source table");
+      }
+      names[c] = columns[c];
+    }
+    auto derived = root_table(*rows).project(names);
+    proxy = std::make_shared<TableProxy>(derived);
+    return Status::OK();
+  } catch (const std::exception& e) {
+    return Status::Invalid("Error rebuilding derived table: ", e.what());
+  }
+}
+
 }  // namespace
 
+bool IsColumnCountMismatch(const std::exception& e) {
+  // Raised by PlainTable::lock, PlainTable::resync and ColumnSet::syncColumns.
+  // casacore gives no more specific way to tell it apart.
+  return std::string_view(e.what()).find("changed the number of columns") !=
+         std::string_view::npos;
+}
+
 bool IsolatedTableProxy::IsClosed() const { return is_closed_; }
+
+Result<std::unique_ptr<IsolatedTableProxy::MaybeLockAndFinalise>>
+IsolatedTableProxy::LockInstance(std::size_t instance, CasaLockType lock_type) const {
+  for (int attempt = 0;; ++attempt) {
+    bool retry = attempt == 0 && CanRefresh();
+    std::unique_ptr<MaybeLockAndFinalise> lock;
+    try {
+      lock = std::make_unique<MaybeLockAndFinalise>(GetProxy(instance), lock_type);
+    } catch (const casacore::AipsError& e) {
+      // The constructor has already released anything it acquired
+      if (!retry || !IsColumnCountMismatch(e)) throw;
+    }
+    // A stale resync is not fatal: the operation can proceed against the
+    // columns the instance knows about, as it does when it cannot refresh
+    if (lock && (!lock->stale || !retry)) return lock;
+    // Release the lock before reopening, which takes locks of its own
+    lock.reset();
+    ARROW_LOG(DEBUG) << "Refreshing out of date table instance " << instance;
+    ARROW_RETURN_NOT_OK(RefreshInstance(instance));
+  }
+}
+
+Status IsolatedTableProxy::RefreshInstance(std::size_t instance) const {
+  auto& proxy = proxy_pools_[instance].slot_->proxy;
+
+  if (!root_) {
+    if (!reopen_) {
+      return Status::NotImplemented(
+          "Refreshing the instances of this table after a structural change");
+    }
+    return RefreshProxy(proxy, reopen_);
+  }
+
+  // A reference table always refers to the root table directly, even when
+  // made from another reference table, so only the root instance needs to
+  // be current. Take what the stale instance selected before dropping it.
+  auto rows = std::make_shared<casacore::RowNumbers>();
+  casacore::Vector<casacore::String> columns;
+  try {
+    const auto& table = proxy->table();
+    if (table.isNull()) return Status::Invalid("Table instance is closed");
+    if (table.isRootTable()) {
+      // Not a selection over the root, e.g. a TAQL result computed into a
+      // table of its own. It cannot be stale on account of the root.
+      return Status::NotImplemented("Refreshing a derived table that is not a ",
+                                    "selection over its source table");
+    }
+    *rows = table.rowNumbers();
+    columns = table.tableDesc().columnNames();
+  } catch (const std::exception& e) {
+    return Status::Invalid("Error inspecting derived table instance: ", e.what());
+  }
+
+  // Dropping first releases this instance's hold on the stale root
+  DropTable(*proxy);
+  // Refreshes the root instance, if it is itself out of date
+  ARROW_ASSIGN_OR_RAISE(auto root_lock,
+                        root_->LockInstance(instance, CasaLockType::Read));
+  return RebuildDerived(proxy, rows, columns, *root_lock->proxy);
+}
 
 std::size_t IsolatedTableProxy::GetInstance() const {
   using NumTasksType = decltype(ProxyAndPool::io_pool_->GetNumTasks());
@@ -153,6 +259,12 @@ std::shared_ptr<IsolatedTableProxy> IsolatedTableProxy::SpawnWriter() {
   // it replaces never have table files to write out.
   auto instance = 0;  // GetInstance();
   itp->proxy_pools_.push_back(proxy_pools_[instance]);
+  // The writer's instance is this ITP's instance 0, so it refreshes it the
+  // same way. Instance 0 goes stale when another handle or process adds a
+  // column; refreshing it is still safe, because lock() throws on the
+  // mismatch before the writer has changed anything to flush.
+  itp->reopen_ = reopen_;
+  itp->root_ = root_;
   itp->is_closed_ = false;
   return itp;
 }
@@ -160,7 +272,7 @@ std::shared_ptr<IsolatedTableProxy> IsolatedTableProxy::SpawnWriter() {
 Status IsolatedTableProxy::RefreshInstances(std::size_t except) {
   ARROW_RETURN_NOT_OK(CheckClosed());
   if (proxy_pools_.size() <= 1) return Status::OK();
-  if (!reopen_) {
+  if (!CanRefresh()) {
     return Status::NotImplemented(
         "Refreshing the instances of this table after a structural change");
   }
@@ -175,14 +287,14 @@ Status IsolatedTableProxy::RefreshInstances(std::size_t except) {
     // calling thread would deadlock, and running inline is what the
     // submission is there to guarantee
     if (pp.io_pool_->OwnsThisThread()) {
-      ARROW_RETURN_NOT_OK(RefreshProxy(pp.slot_->proxy, reopen_));
+      ARROW_RETURN_NOT_OK(RefreshInstance(i));
       continue;
     }
-    auto future = arrow::DeferNotOk(
-        pp.io_pool_->Submit([slot = pp.slot_, reopen = reopen_]() -> Result<bool> {
-          ARROW_RETURN_NOT_OK(RefreshProxy(slot->proxy, reopen));
-          return true;
-        }));
+    // Waited on below, so this outlives the task
+    auto future = arrow::DeferNotOk(pp.io_pool_->Submit([this, i]() -> Result<bool> {
+      ARROW_RETURN_NOT_OK(RefreshInstance(i));
+      return true;
+    }));
     ARROW_RETURN_NOT_OK(future.status());
   }
   return Status::OK();

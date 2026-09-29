@@ -36,6 +36,11 @@ using TableProxyRef = casacore::TableProxy&;
 using ReopenFn = std::function<arrow::Result<std::shared_ptr<CasaTableProxy>>(
     const std::string& name, bool writable)>;
 
+// Is this the error casacore raises when a table instance's column set
+// no longer matches the table on disk? casacore fixes an open table's
+// columns for the lifetime of the object, so the instance must be reopened.
+bool IsColumnCountMismatch(const std::exception& e);
+
 // Isolates access to a CASA Table to a single thread
 class IsolatedTableProxy : public std::enable_shared_from_this<IsolatedTableProxy> {
  public:
@@ -55,6 +60,8 @@ class IsolatedTableProxy : public std::enable_shared_from_this<IsolatedTableProx
     std::shared_ptr<CasaTableProxy> proxy;
     CasaLockType lock_type;
     bool locked = false;
+    // Set when the resync found the instance's column set out of date
+    bool stale = false;
 
     MaybeLockAndFinalise(std::shared_ptr<CasaTableProxy> proxy_, CasaLockType lock_type_)
         : proxy(std::move(proxy_)), lock_type(lock_type_) {
@@ -107,6 +114,8 @@ class IsolatedTableProxy : public std::enable_shared_from_this<IsolatedTableProx
             // The lock is deliberately kept: we hold it, and the destructor
             // that releases it only runs because we do not throw here.
             ARROW_LOG(DEBUG) << "Unable to resync table: " << e.what();
+            // Let the caller reopen the instance, if it is able to
+            stale = IsColumnCountMismatch(e);
           }
         }
       }
@@ -159,9 +168,8 @@ class IsolatedTableProxy : public std::enable_shared_from_this<IsolatedTableProx
           try {
             auto self = weak_self.lock();
             if (!self) return arrow::Status::Invalid("TableProxy is closed");
-            auto proxy = self->GetProxy(instance);
-            MaybeLockAndFinalise lock(proxy, lock_type);
-            return std::invoke(functor, *proxy);
+            ARROW_ASSIGN_OR_RAISE(auto lock, self->LockInstance(instance, lock_type));
+            return std::invoke(functor, *lock->proxy);
           } catch (casacore::AipsError& e) {
             return arrow::Status::Invalid("Unhandled casacore exception: ", e.what());
           } catch (std::runtime_error& e) {
@@ -187,9 +195,8 @@ class IsolatedTableProxy : public std::enable_shared_from_this<IsolatedTableProx
           try {
             auto self = weak_self.lock();
             if (!self) return arrow::Status::Invalid("TableProxy is closed");
-            auto proxy = self->GetProxy(instance);
-            MaybeLockAndFinalise lock(proxy, lock_type);
-            return std::invoke(functor, *proxy);
+            ARROW_ASSIGN_OR_RAISE(auto lock, self->LockInstance(instance, lock_type));
+            return std::invoke(functor, *lock->proxy);
           } catch (casacore::AipsError& e) {
             return arrow::Status::Invalid("Unhandled casacore exception: ", e.what());
           } catch (std::runtime_error& e) {
@@ -213,9 +220,8 @@ class IsolatedTableProxy : public std::enable_shared_from_this<IsolatedTableProx
           try {
             auto self = weak_self.lock();
             if (!self) return arrow::Status::Invalid("TableProxy is closed");
-            auto proxy = self->GetProxy(instance);
-            MaybeLockAndFinalise lock(proxy, lock_type);
-            return std::invoke(fn, result, *proxy);
+            ARROW_ASSIGN_OR_RAISE(auto lock, self->LockInstance(instance, lock_type));
+            return std::invoke(fn, result, *lock->proxy);
           } catch (casacore::AipsError& e) {
             return arrow::Status::Invalid("Unhandled casacore exception: ", e.what());
           } catch (std::runtime_error& e) {
@@ -241,9 +247,8 @@ class IsolatedTableProxy : public std::enable_shared_from_this<IsolatedTableProx
           try {
             auto self = weak_self.lock();
             if (!self) return arrow::Status::Invalid("TableProxy is closed");
-            auto proxy = self->GetProxy(instance);
-            MaybeLockAndFinalise lock(proxy, lock_type);
-            return std::invoke(fn, result, *proxy);
+            ARROW_ASSIGN_OR_RAISE(auto lock, self->LockInstance(instance, lock_type));
+            return std::invoke(fn, result, *lock->proxy);
           } catch (casacore::AipsError& e) {
             return arrow::Status::Invalid("Unhandled casacore exception: ", e.what());
           } catch (std::runtime_error& e) {
@@ -273,9 +278,8 @@ class IsolatedTableProxy : public std::enable_shared_from_this<IsolatedTableProx
           try {
             auto self = weak_self.lock();
             if (!self) return arrow::Status::Invalid("TableProxy is closed");
-            auto proxy = self->GetProxy(instance);
-            MaybeLockAndFinalise lock(proxy, lock_type);
-            return std::invoke(functor, *proxy);
+            ARROW_ASSIGN_OR_RAISE(auto lock, self->LockInstance(instance, lock_type));
+            return std::invoke(functor, *lock->proxy);
           } catch (casacore::AipsError& e) {
             return arrow::Status::Invalid("Unhandled casacore exception: ", e.what());
           } catch (std::runtime_error& e) {
@@ -302,9 +306,8 @@ class IsolatedTableProxy : public std::enable_shared_from_this<IsolatedTableProx
           try {
             auto self = weak_self.lock();
             if (!self) return arrow::Status::Invalid("TableProxy is closed");
-            auto proxy = self->GetProxy(instance);
-            MaybeLockAndFinalise lock(proxy, lock_type);
-            return std::invoke(functor, *proxy);
+            ARROW_ASSIGN_OR_RAISE(auto lock, self->LockInstance(instance, lock_type));
+            return std::invoke(functor, *lock->proxy);
           } catch (casacore::AipsError& e) {
             return arrow::Status::Invalid("Unhandled casacore exception: ", e.what());
           } catch (std::runtime_error& e) {
@@ -374,9 +377,8 @@ class IsolatedTableProxy : public std::enable_shared_from_this<IsolatedTableProx
             // Hold a read lock on the source proxy while the functor runs.
             // Under user locking, casacore requires the source table to be
             // locked while e.g. a TAQL command builds a reference table from it.
-            auto proxy = this->GetProxy(i);
-            MaybeLockAndFinalise lock(proxy, CasaLockType::Read);
-            return std::invoke(fn, *proxy);
+            ARROW_ASSIGN_OR_RAISE(auto lock, this->LockInstance(i, CasaLockType::Read));
+            return std::invoke(fn, *lock->proxy);
           }));
 
       ARROW_ASSIGN_OR_RAISE(auto table_proxy, future.MoveResult());
@@ -387,6 +389,8 @@ class IsolatedTableProxy : public std::enable_shared_from_this<IsolatedTableProx
     itp->is_closed_ = false;
     // Add an explicit dependency on the ITP
     itp->dependencies_.push_back(shared_from_this());
+    // Derived instances are rebuilt over the root's, see RefreshInstance
+    itp->root_ = root_ ? root_ : shared_from_this();
     return itp;
   }
 
@@ -407,6 +411,19 @@ class IsolatedTableProxy : public std::enable_shared_from_this<IsolatedTableProx
   // released, as reopening a table acquires locks of its own.
   arrow::Status RefreshInstances(std::size_t except);
 
+  // Replace the given instance with one that is current. Must run on
+  // the instance's isolation thread.
+  //
+  // An instance of a table made by Make() is reopened. An instance of one
+  // made by Spawn() -- a reference table, e.g. a TAQL selection -- is rebuilt
+  // over the root table's instance on the same thread, from the same rows
+  // and columns. Its query is deliberately not run again: the table may
+  // have changed since, and a re-evaluated selection could differ from the
+  // one the other instances hold.
+  //
+  // Only the instance's TableProxy is replaced, so this is logically const.
+  arrow::Status RefreshInstance(std::size_t instance) const;
+
   std::size_t nInstances() const { return proxy_pools_.size(); }
 
  protected:
@@ -418,6 +435,15 @@ class IsolatedTableProxy : public std::enable_shared_from_this<IsolatedTableProx
 
   // Gets the least active instance
   std::size_t GetInstance() const;
+
+  // Can instances of this ITP be replaced by RefreshInstance?
+  bool CanRefresh() const { return reopen_ || root_; }
+
+  // Lock the given instance on its isolation thread. An instance found to
+  // be out of date -- another handle or process added a column -- is
+  // refreshed and locked again, once. Other failures throw, as before.
+  arrow::Result<std::unique_ptr<MaybeLockAndFinalise>> LockInstance(
+      std::size_t instance, CasaLockType lock_type) const;
 
   // Get the Table Proxy for the given instance
   const std::shared_ptr<casacore::TableProxy>& GetProxy(std::size_t instance) const;
@@ -473,7 +499,10 @@ class IsolatedTableProxy : public std::enable_shared_from_this<IsolatedTableProx
   };
 
   std::vector<ProxyAndPool> proxy_pools_;
+  // How a table made by Make() reopens its instances
   ReopenFn reopen_;
+  // The ITP made by Make() that a Spawn()ed ITP ultimately derives from
+  std::shared_ptr<IsolatedTableProxy> root_;
   // Default to closed so a partially-constructed or default-constructed
   // proxy is never treated as open. Atomic because it is written/read
   // across the isolation pool threads.

@@ -212,18 +212,24 @@ Result<bool> NewTableProxy::AddRows(std::size_t nrows) {
 
 Result<bool> NewTableProxy::AddColumns(const std::string& json_columndescs,
                                        const std::string& json_dminfo) {
-  return itp_->SpawnWriter()
-      ->RunAsync(
-          [json_columndescs = json_columndescs,
-           json_dminfo = json_dminfo](TableProxy& tp) {
-            detail::MaybeReopenRW(tp);
-            Record columndescs = JsonParser::parse(json_columndescs).toRecord();
-            Record dminfo = JsonParser::parse(json_dminfo).toRecord();
-            tp.addColumns(columndescs, dminfo, false);
-            return true;
-          },
-          LockType::Write)
-      .MoveResult();
+  ARROW_RETURN_NOT_OK(itp_->SpawnWriter()
+                          ->RunAsync(
+                              [json_columndescs = json_columndescs,
+                               json_dminfo = json_dminfo](TableProxy& tp) {
+                                detail::MaybeReopenRW(tp);
+                                Record columndescs =
+                                    JsonParser::parse(json_columndescs).toRecord();
+                                Record dminfo = JsonParser::parse(json_dminfo).toRecord();
+                                tp.addColumns(columndescs, dminfo, false);
+                                return true;
+                              },
+                              LockType::Write)
+                          .status());
+  // Only the writer instance knows about the new columns: the others can
+  // no longer lock, read or close the table until they are reopened.
+  // Waiting on the write above has released its lock by this point.
+  ARROW_RETURN_NOT_OK(itp_->RefreshInstances(0));
+  return true;
 }
 
 Result<bool> NewTableProxy::PutColumn(const std::string& column,

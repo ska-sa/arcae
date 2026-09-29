@@ -10,6 +10,8 @@
 #include <arrow/util/logging.h>
 #include <arrow/util/thread_pool.h>
 
+#include <casacore/tables/Tables/PlainTable.h>
+#include <casacore/tables/Tables/TableCache.h>
 #include <casacore/tables/Tables/TableProxy.h>
 
 using ::arrow::Future;
@@ -21,6 +23,85 @@ using ::casacore::TableProxy;
 
 namespace arcae {
 namespace detail {
+namespace {
+
+// Release the table held by tp without flushing it. Must run on the
+// isolation thread that owns tp: destroying a PlainTable removes it from
+// the thread_local table cache it was registered in.
+//
+// This is only safe because tp does not hold a write lock once unlocked.
+// Releasing a write lock writes the table files out, and for an instance
+// whose column set is out of date that would write a stale table
+// description over the current one. Siblings never take a write lock
+// (SpawnWriter pins writes to instance 0), which is what makes a stale
+// instance safe to discard.
+void DropTable(TableProxy& tp) noexcept {
+  try {
+    tp.unlock();
+  } catch (const std::exception& e) {
+    ARROW_LOG(DEBUG) << "Error unlocking table: " << e.what();
+  }
+  try {
+    tp.table() = casacore::Table();
+  } catch (const std::exception& e) {
+    ARROW_LOG(WARNING) << "Error releasing table: " << e.what();
+  }
+}
+
+// Flush and close tp on its isolation thread.
+//
+// TableProxy::close() flushes, and the flush takes a table lock of its
+// own, so an instance that can no longer lock -- one whose column count
+// another instance changed -- throws before anything is closed. Drop the
+// table regardless, so that a failed close does not keep it and its lock
+// registration alive until the TableProxy happens to be destroyed.
+Status CloseProxy(TableProxy& tp) {
+  try {
+    tp.flush(false);
+    tp.close();
+    return Status::OK();
+  } catch (const std::exception& e) {
+    DropTable(tp);
+    return Status::Invalid("Error closing table: ", e.what());
+  }
+}
+
+// Replace the TableProxy in proxy with a freshly opened one.
+// Must run on the isolation thread that owns the instance.
+Status RefreshProxy(std::shared_ptr<TableProxy>& proxy, const ReopenFn& reopen) {
+  std::string name;
+  bool writable;
+
+  try {
+    const auto& table = proxy->table();
+    if (table.isNull()) return Status::Invalid("Table instance is closed");
+    name = table.tableName();
+    writable = table.isWritable();
+  } catch (const std::exception& e) {
+    return Status::Invalid("Error inspecting table instance: ", e.what());
+  }
+
+  DropTable(*proxy);
+
+  // Opening a table first consults this thread's table cache. If something
+  // else on this thread -- e.g. a TAQL query over this table -- still
+  // references the stale table it is alive and cached, and opening it again
+  // would simply return it. Evict it so the open constructs a new one.
+  // When nothing else did reference it, dropping it already removed the
+  // entry and this does nothing.
+  //
+  // The stale table removes its cache entry by name when it is eventually
+  // destroyed, which then evicts the new table instead. That only means a
+  // later open of this path on this thread constructs a separate table
+  // object, the situation arcae is already designed around across threads.
+  casacore::PlainTable::tableCache().remove(name);
+
+  ARROW_ASSIGN_OR_RAISE(auto fresh, reopen(name, writable));
+  proxy = std::move(fresh);
+  return Status::OK();
+}
+
+}  // namespace
 
 bool IsolatedTableProxy::IsClosed() const { return is_closed_; }
 
@@ -45,7 +126,7 @@ std::size_t IsolatedTableProxy::GetInstance() const {
 const std::shared_ptr<TableProxy>& IsolatedTableProxy::GetProxy(
     std::size_t instance) const {
   assert(instance < proxy_pools_.size());
-  return proxy_pools_[instance].table_proxy_;
+  return proxy_pools_[instance].slot_->proxy;
 }
 
 const std::shared_ptr<ThreadPool>& IsolatedTableProxy::GetPool(
@@ -66,17 +147,50 @@ std::shared_ptr<IsolatedTableProxy> IsolatedTableProxy::SpawnWriter() {
     delete p;
   });
   itp->dependencies_.emplace_back(shared_from_this());
-  // Using the first instance means that writes can still work after
-  // non-syncable operations like AddColumns
+  // Writes are pinned to the first instance. This keeps writes working
+  // after non-syncable operations like AddColumns, and RefreshInstances(0)
+  // relies on it: only instance 0 ever takes a write lock, so the siblings
+  // it replaces never have table files to write out.
   auto instance = 0;  // GetInstance();
   itp->proxy_pools_.push_back(proxy_pools_[instance]);
   itp->is_closed_ = false;
   return itp;
 }
 
+Status IsolatedTableProxy::RefreshInstances(std::size_t except) {
+  ARROW_RETURN_NOT_OK(CheckClosed());
+  if (proxy_pools_.size() <= 1) return Status::OK();
+  if (!reopen_) {
+    return Status::NotImplemented(
+        "Refreshing the instances of this table after a structural change");
+  }
+
+  // Refresh one instance at a time, as Make() creates them. This only
+  // follows a structural change, and the recipes' JSON parsing is
+  // serialised in casacore anyway (002-json-parser-mutex.patch)
+  for (std::size_t i = 0; i < proxy_pools_.size(); ++i) {
+    if (i == except) continue;
+    const auto& pp = proxy_pools_[i];
+    // As in Close(): waiting on a task submitted to the pool running the
+    // calling thread would deadlock, and running inline is what the
+    // submission is there to guarantee
+    if (pp.io_pool_->OwnsThisThread()) {
+      ARROW_RETURN_NOT_OK(RefreshProxy(pp.slot_->proxy, reopen_));
+      continue;
+    }
+    auto future = arrow::DeferNotOk(
+        pp.io_pool_->Submit([slot = pp.slot_, reopen = reopen_]() -> Result<bool> {
+          ARROW_RETURN_NOT_OK(RefreshProxy(slot->proxy, reopen));
+          return true;
+        }));
+    ARROW_RETURN_NOT_OK(future.status());
+  }
+  return Status::OK();
+}
+
 bool IsolatedTableProxy::OwnsThisThread() const {
-  for (const auto& [proxy, pool] : proxy_pools_) {
-    if (pool->OwnsThisThread()) return true;
+  for (const auto& pp : proxy_pools_) {
+    if (pp.io_pool_->OwnsThisThread()) return true;
   }
   return false;
 }
@@ -120,7 +234,8 @@ Result<bool> IsolatedTableProxy::Close() {
   for (auto& pp : proxy_pools_) {
     if (!pp.io_pool_->OwnsThisThread()) pp.io_pool_->WaitForIdle();
   }
-  for (auto& [proxy, pool] : proxy_pools_) {
+  for (auto& pp : proxy_pools_) {
+    const auto& pool = pp.io_pool_;
     // Submitting to a pool that owns the calling thread and then waiting on the
     // result deadlocks: the only worker able to run the close task is the
     // thread doing the waiting. This happens whenever the last reference to
@@ -129,23 +244,12 @@ Result<bool> IsolatedTableProxy::Close() {
     // completes. Closing inline is correct there: being on the isolation
     // thread is all the submission is there to guarantee.
     if (pool->OwnsThisThread()) {
-      try {
-        proxy->flush(false);
-        proxy->close();
-      } catch (const std::exception& e) {
-        inline_status = Status::Invalid("Error closing table: ", e.what());
-      }
+      auto status = CloseProxy(*pp.slot_->proxy);
+      if (inline_status.ok()) inline_status = std::move(status);
       continue;
     }
-    results.push_back(arrow::DeferNotOk(pool->Submit([tp = proxy]() -> Result<bool> {
-      // flush/close may throw casacore::AipsError; an exception escaping a
-      // pool task would terminate the process, so convert it to a Status.
-      try {
-        tp->flush(false);
-        tp->close();
-      } catch (const std::exception& e) {
-        return Status::Invalid("Error closing table: ", e.what());
-      }
+    results.push_back(arrow::DeferNotOk(pool->Submit([slot = pp.slot_]() -> Result<bool> {
+      ARROW_RETURN_NOT_OK(CloseProxy(*slot->proxy));
       return true;
     })));
   }

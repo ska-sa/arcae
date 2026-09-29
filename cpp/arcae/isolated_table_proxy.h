@@ -2,8 +2,10 @@
 #define ARCAE_ISOLATED_TABLE_PROXY_H
 
 #include <atomic>
+#include <functional>
 #include <memory>
 #include <stdexcept>
+#include <string>
 #include <type_traits>
 #include <vector>
 
@@ -27,6 +29,12 @@ using CasaLockType = casacore::FileLocker::LockType;
 using CasaTableProxy = casacore::TableProxy;
 using ConstTableProxyRef = const casacore::TableProxy&;
 using TableProxyRef = casacore::TableProxy&;
+
+// Opens an existing table afresh on the calling isolation thread,
+// given its name and whether it should be writable. Used to replace an
+// instance whose column set is out of date (see RefreshInstances)
+using ReopenFn = std::function<arrow::Result<std::shared_ptr<CasaTableProxy>>(
+    const std::string& name, bool writable)>;
 
 // Isolates access to a CASA Table to a single thread
 class IsolatedTableProxy : public std::enable_shared_from_this<IsolatedTableProxy> {
@@ -309,8 +317,11 @@ class IsolatedTableProxy : public std::enable_shared_from_this<IsolatedTableProx
   template <typename Fn,
             typename = std::enable_if<std::is_same_v<
                 ArrowResultType<Fn>, arrow::Result<std::shared_ptr<CasaTableProxy>>>>>
+  // reopen, if supplied, allows instances to be refreshed after a
+  // structural change such as AddColumns. It cannot be functor itself:
+  // for a table that functor creates, calling it again recreates the table.
   static arrow::Result<std::shared_ptr<IsolatedTableProxy>> Make(
-      Fn&& functor, std::size_t ninstances = 1) {
+      Fn&& functor, std::size_t ninstances = 1, ReopenFn reopen = nullptr) {
     if (ninstances < 1) {
       return arrow::Status::Invalid("Number of instances must at least be 1");
     }
@@ -323,6 +334,7 @@ class IsolatedTableProxy : public std::enable_shared_from_this<IsolatedTableProx
 
     // Mark as closed so that if construction fails, we don't try to close it
     proxy->is_closed_ = true;
+    proxy->reopen_ = std::move(reopen);
 
     // Create ninstances I/O pools
     for (std::size_t i = 0; i < ninstances; ++i) {
@@ -330,7 +342,8 @@ class IsolatedTableProxy : public std::enable_shared_from_this<IsolatedTableProx
       auto table_fut = arrow::DeferNotOk(io_pool->Submit(fwd_functor));
       ARROW_ASSIGN_OR_RAISE(auto table_proxy, table_fut.MoveResult());
       proxy->proxy_pools_.push_back(
-          ProxyAndPool{std::move(table_proxy), std::move(io_pool)});
+          ProxyAndPool{std::make_shared<ProxySlot>(ProxySlot{std::move(table_proxy)}),
+                       std::move(io_pool)});
     }
 
     proxy->is_closed_ = false;
@@ -367,7 +380,8 @@ class IsolatedTableProxy : public std::enable_shared_from_this<IsolatedTableProx
           }));
 
       ARROW_ASSIGN_OR_RAISE(auto table_proxy, future.MoveResult());
-      itp->proxy_pools_.emplace_back(ProxyAndPool{std::move(table_proxy), GetPool(i)});
+      itp->proxy_pools_.emplace_back(ProxyAndPool{
+          std::make_shared<ProxySlot>(ProxySlot{std::move(table_proxy)}), GetPool(i)});
     }
 
     itp->is_closed_ = false;
@@ -381,6 +395,17 @@ class IsolatedTableProxy : public std::enable_shared_from_this<IsolatedTableProx
   // thread and instance as concurrent writes issued from multiple
   // threads will produce race conditions in the underlying casacore layer
   std::shared_ptr<IsolatedTableProxy> SpawnWriter();
+
+  // Replace every instance except `except` with a freshly opened one.
+  //
+  // casacore fixes an open table's column set for the lifetime of the
+  // object, so once one instance adds a column the others describe a
+  // table that no longer exists: every later lock, read or close on them
+  // throws. Only the instance that made the change, `except`, is current.
+  //
+  // Must be called once the write lock taken for the change has been
+  // released, as reopening a table acquires locks of its own.
+  arrow::Status RefreshInstances(std::size_t except);
 
   std::size_t nInstances() const { return proxy_pools_.size(); }
 
@@ -435,12 +460,20 @@ class IsolatedTableProxy : public std::enable_shared_from_this<IsolatedTableProx
   }
 
  private:
+  // Holds an instance's TableProxy. Shared with the ITPs returned by
+  // SpawnWriter, so that a refreshed instance is seen by all of them.
+  // Only ever read or replaced on the instance's own isolation thread.
+  struct ProxySlot {
+    std::shared_ptr<casacore::TableProxy> proxy;
+  };
+
   struct ProxyAndPool {
-    std::shared_ptr<casacore::TableProxy> table_proxy_;
+    std::shared_ptr<ProxySlot> slot_;
     std::shared_ptr<arrow::internal::ThreadPool> io_pool_;
   };
 
   std::vector<ProxyAndPool> proxy_pools_;
+  ReopenFn reopen_;
   // Default to closed so a partially-constructed or default-constructed
   // proxy is never treated as open. Atomic because it is written/read
   // across the isolation pool threads.

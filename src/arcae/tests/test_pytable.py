@@ -351,6 +351,186 @@ def test_getcol(getcol_table):
         T.getcol("NONEXISTENT")
 
 
+# Numpy (C-ordered) cell shapes of each row. None is an undefined row
+RESULT_SHAPE_CELLS = {
+    "fixed": [(2, 2)] * 3,
+    "uniform": [(2, 2)] * 3,
+    "ragged": [(1, 3), (2, 1), (3, 2), None],
+}
+
+
+@pytest.mark.parametrize("case", list(RESULT_SHAPE_CELLS))
+@pytest.mark.parametrize("rows", ["all", "reversed", "subset"])
+@pytest.mark.parametrize("shape", [(1, 1), (2, 2), (4, 1), (1, 4), (4, 4), (3, 2)])
+def test_getcol_result_shape(tmp_path, case, rows, shape):
+    """Unselected dimensions of a result buffer smaller than a cell
+    truncate the cell, while larger dimensions are left untouched"""
+    cells = RESULT_SHAPE_CELLS[case]
+    nrow = len(cells)
+    desc = {"VAR": {"valueType": "float", "ndim": 2, "_c_order": True}}
+    if case == "fixed":
+        desc["VAR"].update({"shape": list(cells[0]), "option": 5})
+    else:
+        desc["VAR"]["option"] = 0
+
+    T = Table.from_descriptor(str(tmp_path / "shape.table"), table_desc=desc, nrow=nrow)
+    values = []
+    for r, cell in enumerate(cells):
+        value = None if cell is None else np.arange(np.prod(cell), dtype=np.float32)
+        value = None if cell is None else (value + 10 * r).reshape(cell)
+        if value is not None:
+            T.putcol("VAR", value[None], index=(np.array([r]),))
+        values.append(value)
+
+    row_ids = {
+        "all": None,
+        "reversed": np.arange(nrow)[::-1].copy(),
+        "subset": np.array([2, 0]),
+    }[rows]
+    selected = np.arange(nrow) if row_ids is None else row_ids
+
+    expected = np.full((len(selected),) + shape, np.nan, np.float32)
+    for i, r in enumerate(selected):
+        if (v := values[r]) is not None:
+            a, b = min(v.shape[0], shape[0]), min(v.shape[1], shape[1])
+            expected[i, :a, :b] = v[:a, :b]
+
+    result = np.full((len(selected),) + shape, np.nan, np.float32)
+    actual = T.getcol("VAR", index=(row_ids,), result=result)
+    assert_array_equal(actual, expected)
+    assert_array_equal(result, expected)
+
+
+@pytest.mark.parametrize("fixed", [True, False], ids=["fixed", "variable"])
+def test_getcol_result_explicit_padding(tmp_path, fixed):
+    """Explicit -1 indices still pad a result buffer"""
+    desc = {"VAR": {"valueType": "float", "ndim": 2, "_c_order": True}}
+    desc["VAR"].update({"shape": [2, 2], "option": 5} if fixed else {"option": 0})
+    T = Table.from_descriptor(str(tmp_path / "shape.table"), table_desc=desc, nrow=2)
+    data = np.arange(8, dtype=np.float32).reshape(2, 2, 2)
+    T.putcol("VAR", data)
+
+    # Explicitly padded channels, implicitly padded correlations
+    result = np.full((2, 4, 3), np.nan, np.float32)
+    index = (None, np.array([-1, 1, -1, 0]))
+    expected = np.full((2, 4, 3), np.nan, np.float32)
+    expected[:, 1, :2] = data[:, 1]
+    expected[:, 3, :2] = data[:, 0]
+    assert_array_equal(T.getcol("VAR", index=index, result=result), expected)
+
+    with pytest.raises(IndexError, match="exceeds dimension"):
+        T.getcol("VAR", index=(None, np.array([0, 2])), result=result[:, :2])
+
+
+@pytest.mark.parametrize("dtype", [np.float32, np.complex64, np.int32])
+@pytest.mark.parametrize("contiguous", [True, False])
+def test_getcol_returns_result(tmp_path, dtype, contiguous):
+    """getcol returns the supplied result, filled in place"""
+    value_type = {np.float32: "float", np.complex64: "complex", np.int32: "int"}[dtype]
+    desc = {"VAR": {"valueType": value_type, "ndim": 2, "option": 0, "_c_order": True}}
+    T = Table.from_descriptor(str(tmp_path / "result.table"), table_desc=desc, nrow=2)
+    data = np.arange(8).astype(dtype).reshape(2, 2, 2)
+    T.putcol("VAR", data)
+
+    buffer = np.zeros((2, 2, 4), dtype)
+    result = buffer[..., :2] if contiguous else buffer[..., ::2]
+    result = np.ascontiguousarray(result) if contiguous else result
+    assert result.flags.c_contiguous is contiguous
+    assert T.getcol("VAR", result=result) is result
+    assert_array_equal(result, data)
+
+
+@pytest.mark.parametrize("dtype", [np.float32, np.complex128, np.int64, np.uint8])
+def test_numpy_to_arrow_does_not_own_memory(tmp_path, dtype):
+    """Arrow arrays passed to the C++ layer must not reference numpy arrays.
+    C++ tasks can outlive a getcol or putcol call and releasing such a
+    reference needs the GIL, which deadlocks if the table is concurrently
+    being closed by a thread holding the GIL"""
+    import sys
+
+    desc = {"VAR": {"valueType": "float", "ndim": 2, "option": 0, "_c_order": True}}
+    T = Table.from_descriptor(str(tmp_path / "own.table"), table_desc=desc, nrow=2)
+    data = np.ones((2, 3, 4), dtype)
+    pa_array, owned = T._numpy_to_arrow(data)
+    assert owned is not None
+    assert np.shares_memory(owned, data)
+    values = pa_array
+    while isinstance(values, pa.FixedSizeListArray):
+        values = values.flatten()
+    assert_array_equal(values.to_numpy(), owned)
+    del values
+
+    refcount = sys.getrefcount(owned)
+    del pa_array
+    assert sys.getrefcount(owned) == refcount
+
+
+@pytest.mark.parametrize("case", list(RESULT_SHAPE_CELLS))
+@pytest.mark.parametrize("shape", [(1, 1), (2, 2), (4, 1), (1, 4), (4, 4), (3, 2)])
+def test_putcol_cell_shape(tmp_path, case, shape):
+    """Unselected dimensions of data smaller than a defined cell write
+    the leading elements of the cell, while larger dimensions raise"""
+    cells = [c for c in RESULT_SHAPE_CELLS[case] if c is not None]
+    nrow = len(cells)
+    desc = {"VAR": {"valueType": "float", "ndim": 2, "_c_order": True}}
+    if case == "fixed":
+        desc["VAR"].update({"shape": list(cells[0]), "option": 5})
+    else:
+        desc["VAR"]["option"] = 0
+
+    T = Table.from_descriptor(str(tmp_path / "shape.table"), table_desc=desc, nrow=nrow)
+    for r, cell in enumerate(cells):
+        T.putcol("VAR", np.zeros((1,) + cell, np.float32), index=(np.array([r]),))
+
+    data = np.arange(nrow * np.prod(shape), dtype=np.float32).reshape((nrow,) + shape)
+
+    if any(s > c for cell in cells for s, c in zip(shape, cell)):
+        with pytest.raises(IndexError, match="exceeds cell shape"):
+            T.putcol("VAR", data)
+        expected = [np.zeros(cell, np.float32) for cell in cells]
+    else:
+        T.putcol("VAR", data)
+        expected = [np.zeros(cell, np.float32) for cell in cells]
+        for r, e in enumerate(expected):
+            e[: shape[0], : shape[1]] = data[r]
+
+    for r, e in enumerate(expected):
+        assert_array_equal(T.getcol("VAR", index=(np.array([r]),))[0], e)
+
+
+@pytest.mark.parametrize("fixed", [True, False], ids=["fixed", "variable"])
+def test_putcol_explicit_padding(tmp_path, fixed):
+    """Negative indices in a write selection are not written"""
+    desc = {"VAR": {"valueType": "float", "ndim": 2, "_c_order": True}}
+    desc["VAR"].update({"shape": [2, 2], "option": 5} if fixed else {"option": 0})
+    T = Table.from_descriptor(str(tmp_path / "shape.table"), table_desc=desc, nrow=2)
+    T.putcol("VAR", np.zeros((2, 2, 2), np.float32))
+
+    data = np.arange(16, dtype=np.float32).reshape(2, 4, 2)
+    T.putcol("VAR", data, index=(None, np.array([-1, 1, -1, 0])))
+    assert_array_equal(T.getcol("VAR"), data[:, [3, 1]])
+
+    # Non-negative indices must still fit within the cell
+    with pytest.raises(IndexError, match="exceeds the dimension size"):
+        T.putcol("VAR", data[:, :3], index=(None, np.array([0, 1, 2])))
+
+
+@pytest.mark.parametrize("fixed", [True, False], ids=["fixed", "variable"])
+def test_putcol_selection_size(tmp_path, fixed):
+    """Selections must match the size of the written data"""
+    desc = {"VAR": {"valueType": "float", "ndim": 2, "_c_order": True}}
+    desc["VAR"].update({"shape": [2, 2], "option": 5} if fixed else {"option": 0})
+    T = Table.from_descriptor(str(tmp_path / "shape.table"), table_desc=desc, nrow=2)
+    T.putcol("VAR", np.zeros((2, 2, 2), np.float32))
+    data = np.ones((2, 2, 2), np.float32)
+
+    for index in [(None, np.array([0])), (None, None, np.array([0, 1, -1]))]:
+        with pytest.raises(IndexError, match="does not match data size"):
+            T.putcol("VAR", data, index=index)
+
+    assert_array_equal(T.getcol("VAR"), 0)
+
+
 @pytest.mark.parametrize(
     "col, row, cell_index, expected",
     [

@@ -8,7 +8,7 @@ import json
 from typing import Any, Dict, List, Union
 
 from libcpp cimport bool
-from libcpp.memory cimport shared_ptr
+from libcpp.memory cimport make_shared, shared_ptr, static_pointer_cast
 from libcpp.string cimport string
 from libcpp.utility cimport move
 from libcpp.vector cimport vector
@@ -22,6 +22,7 @@ from pyarrow.includes.common cimport *
 from pyarrow.includes.libarrow cimport *
 
 from pyarrow.lib cimport (
+    pyarrow_wrap_buffer,
     pyarrow_wrap_table,
     pyarrow_wrap_array,
     pyarrow_wrap_table,
@@ -213,11 +214,28 @@ def to_json(obj) -> str:
     return json.dumps(obj, cls=_NumpyJsonEncoder)
 
 
+cdef object unowned_buffer(cnp.ndarray array):
+    """Wrap the memory of a contiguous numpy array in an Arrow buffer
+    that does not own it. Releasing the buffer never requires the GIL,
+    so C++ tasks may drop it at any time, but the array must outlive
+    every use of the buffer."""
+    cdef shared_ptr[CMutableBuffer] buffer = make_shared[CMutableBuffer](
+        <uint8_t*> cnp.PyArray_DATA(array), <int64_t> array.nbytes
+    )
+    return pyarrow_wrap_buffer(static_pointer_cast[CBuffer, CMutableBuffer](buffer))
+
+
 cdef class Table:
     cdef shared_ptr[CCasaTable] c_table
 
     def __init__(self):
         raise TypeError("This class cannot be instantiated directly.")
+
+    def __dealloc__(self):
+        # Closing the table waits on its isolation threads,
+        # which may themselves need the GIL
+        with nogil:
+            self.c_table.reset()
 
     def __enter__(self):
         return self
@@ -377,13 +395,21 @@ cdef class Table:
             shared_ptr[CArray] cpp_result
 
         if result is not None:
-            pa_result = self._numpy_to_arrow(result)
+            # Read into contiguous memory, which the C++ layer does not own
+            contiguous = np.ascontiguousarray(result)
+            pa_result, owned = self._numpy_to_arrow(contiguous)
             cpp_result = pyarrow_unwrap_array(pa_result)
 
         with nogil:
             carray = GetResultValue(
                 self.c_table.get().GetColumn(cpp_column, selection, cpp_result)
             )
+
+        if result is not None and owned is not None:
+            # The returned array views memory owned by result
+            if contiguous is not result:
+                result[...] = contiguous
+            return result
 
         py_column = pyarrow_wrap_array(carray)
         return self._arrow_to_numpy(column, py_column)
@@ -397,7 +423,11 @@ cdef class Table:
         cdef:
             string cpp_column = tobytes(column)
             CSelection selection = build_selection(index)
-            shared_ptr[CArray] carray = pyarrow_unwrap_array(self._numpy_to_arrow(data))
+            shared_ptr[CArray] carray
+
+        # _owned holds the memory underlying carray until the write completes
+        pa_data, _owned = self._numpy_to_arrow(data)
+        carray = pyarrow_unwrap_array(pa_data)
 
         with nogil:
             GetResultValue(self.c_table.get().PutColumn(cpp_column, carray, selection))
@@ -420,10 +450,16 @@ cdef class Table:
 
         return pyarrow_wrap_array(carray)
 
-    def _numpy_to_arrow(self, data: np.ndarray) -> pa.array:
-        """ Covert numpy array into a nested FixedSizeListArrays """
+    def _numpy_to_arrow(self, data: np.ndarray) -> tuple[pa.Array, np.ndarray | None]:
+        """ Covert numpy array into a nested FixedSizeListArrays
+
+        Numeric values are exposed through a buffer that does not own
+        the numpy memory, so that C++ tasks outliving a call never
+        need the GIL to release it. The returned numpy array owns that
+        memory and must outlive any C++ use of the arrow array.
+        Otherwise, None is returned as the values are copied. """
         shape = data.shape
-        np_array = data.ravel()
+        np_array = np.ascontiguousarray(data).reshape(-1)
 
         # Add an extra dimension of 2 elements and cast to the real dtype
         if issubclass(np_array.dtype.type, np.complexfloating):
@@ -431,13 +467,22 @@ cdef class Table:
             np_array = np_array.view(np_array.real.dtype)
 
         # Convert to pyarrow array
-        pa_array = pa.array(np_array)
+        if np_array.dtype.kind in "iuf" and np_array.dtype.isnative:
+            pa_array = pa.Array.from_buffers(
+                pa.from_numpy_dtype(np_array.dtype),
+                len(np_array),
+                [None, unowned_buffer(np_array)],
+            )
+            owned = np_array
+        else:
+            pa_array = pa.array(np_array)
+            owned = None
 
         # Nested by secondary dimensions
         for dim in reversed(shape[1:]):
             pa_array = pa.FixedSizeListArray.from_arrays(pa_array, dim)
 
-        return pa_array
+        return pa_array, owned
 
     def _arrow_to_numpy(
         self,

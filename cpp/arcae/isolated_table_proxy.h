@@ -105,16 +105,15 @@ class IsolatedTableProxy : public std::enable_shared_from_this<IsolatedTableProx
             // failing it is not a reason to fail the operation. In
             // particular, Table::resync always compares the column count and
             // throws when it differs, while Table::lock only compares it on
-            // the occasions it decides to sync. Adding a column to an open
-            // table is a CTDS limitation that readers cannot sync past
-            // anyway (ska-sa/arcae#241) -- they must reopen -- so the read
-            // proceeds against the columns this handle already knows about,
-            // exactly as it did before the resync was introduced.
+            // the occasions it decides to sync. No resync can take in a
+            // column added to an open table (ska-sa/arcae#241): the instance
+            // must be reopened. Flag it as stale so that LockInstance can do
+            // so; where it cannot, the read proceeds against the columns
+            // this instance already knows about.
             //
             // The lock is deliberately kept: we hold it, and the destructor
             // that releases it only runs because we do not throw here.
             ARROW_LOG(DEBUG) << "Unable to resync table: " << e.what();
-            // Let the caller reopen the instance, if it is able to
             stale = IsColumnCountMismatch(e);
           }
         }

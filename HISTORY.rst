@@ -4,6 +4,8 @@ History
 
 X.Y.Z (XX-XX-XXXX)
 ------------------
+* Serialise casacore JSON parsing, whose flex/bison parser is not thread-safe
+  (:pr:`246`)
 * Fix reference leak and input handling in merge_np_partitions (:pr:`244`)
 * Add keyword read/write support: ``getkeywords``/``getcolkeywords``,
   ``putkeywords``/``putcolkeywords`` and ``removekeyword``/``removecolkeyword``

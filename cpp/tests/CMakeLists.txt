@@ -50,11 +50,16 @@ add_executable(slice_shape_test slice_shape_test.cc)
 target_link_libraries(slice_shape_test PRIVATE GTest::gtest_main arcae test_utils)
 add_test(slice_shape_test slice_shape_test)
 
+add_executable(json_parser_test json_parser_test.cc)
+target_link_libraries(json_parser_test PRIVATE GTest::gtest_main arcae test_utils)
+add_test(json_parser_test json_parser_test)
+
 set_tests_properties(result_shape_test
                      cache_size_test
                      data_partition_test
                      dev_transpose_test
                      isolated_table_proxy_test
+                     json_parser_test
                      new_table_proxy_test
                      parallel_write_test
                      selection_test

@@ -1,0 +1,30 @@
+diff --git a/casa/Json/JsonParser.cc b/casa/Json/JsonParser.cc
+--- a/casa/Json/JsonParser.cc
++++ b/casa/Json/JsonParser.cc
+@@ -30,6 +30,7 @@
+ #include <iostream>
+ #include <sstream>
+ #include <fstream>
++#include <mutex>
+ #include <stdio.h>
+ 
+ //# stdlib.h is needed for bison 1.28 and needs to be included here
+@@ -69,6 +70,10 @@
+   const char* JsonParser::theirCommand = 0;
+   JsonKVMap* JsonParser::theirJsonMap = 0;
+ 
++  // The flex scanner and the statics above are process wide state,
++  // so only one thread may parse at a time.
++  static std::mutex theirParseMutex;
++
+ 
+   JsonKVMap JsonParser::parseFile (const String& fileName)
+   {
+@@ -99,6 +104,7 @@
+       return JsonKVMap();
+     }
+     //# Parse the command.
++    std::lock_guard<std::mutex> lock(theirParseMutex);
+     //# Do a yyrestart(yyin) first to make the flex scanner reentrant.
+     JsonGramrestart (JsonGramin);
+     yy_start = 1;

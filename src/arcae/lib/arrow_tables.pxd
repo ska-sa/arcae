@@ -124,6 +124,14 @@ cdef extern from "arcae/table_factory.h" namespace "arcae" nogil:
             const vector[shared_ptr[CCasaTable]] & tables)
 
 cdef extern from "merge_sort.cc" namespace "arcae" nogil:
-    int PartitionMerge(
-        const vector[vector[cnp.PyArrayObject *]] & array_partitions,
-        vector[cnp.PyArrayObject*] * merged_arrays) except *
+    cdef enum class MergeType "arcae::MergeType":
+        INT32
+        INT64
+        FLOAT32
+        FLOAT64
+
+    void PartitionMerge(
+        const vector[vector[const void *]] & inputs,
+        const vector[size_t] & nrows,
+        const vector[MergeType] & types,
+        const vector[void *] & outputs)

@@ -8,7 +8,7 @@ X.Y.Z (DD-MM-YYYY)
   ``getcol`` is given a ``result`` buffer, leaving that part of the result
   untouched as ``-1`` indices do. This allows chunks of a maximal shape to be
   read directly over ragged cells. Fixed shape columns, reads without a
-  ``result`` and writes still raise ``IndexError`` (:pr:`PRNUM`)
+  ``result`` and writes still raise ``IndexError`` (:pr:`249`)
 * Accept read-only index arrays, and fix strided ``int64`` index arrays
   silently selecting the wrong rows (:pr:`248`)
 * Fix a deadlock when a ``Table`` is destroyed shortly after ``getcol`` or

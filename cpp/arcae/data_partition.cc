@@ -424,16 +424,25 @@ Result<DataPartition> DataPartition::Make(const Selection& selection,
     return SpanPair{std::move(disk_span), std::move(mem_span)};
   };
 
-  // Generate disk and memory spans for an unselected dimension in which
-  // only the leading extent elements are read from disk. The remaining
-  // elements have negative disk indices and are not read.
-  // Span pairs are cached on (dim, extent)
+  // Generate disk and memory spans for a dimension in which only
+  // disk indices below the bound are read. Indices at or past the bound
+  // are made negative and are not read.
+  // Span pairs are cached on (dim, bound)
   std::map<std::pair<int, IndexType>, SpanPair> padded_spans;
-  auto GetPaddedSpanPair = [&](auto dim, auto dim_size, auto extent) -> SpanPair {
-    auto key = std::make_pair(int(dim), IndexType(extent));
+  auto GetPaddedSpanPair = [&](auto dim, auto dim_size, auto bound) -> SpanPair {
+    auto key = std::make_pair(int(dim), IndexType(bound));
     if (auto it = padded_spans.find(key); it != padded_spans.end()) return it->second;
-    Index ids(dim_size, -1);
-    std::iota(std::begin(ids), std::begin(ids) + extent, 0);
+    Index ids;
+    if (auto dim_span = selection.FSpan(dim, result_ndim); dim_span.ok()) {
+      auto span = dim_span.ValueOrDie();
+      ids.assign(std::begin(span), std::end(span));
+    } else {
+      ids.resize(dim_size);
+      std::iota(std::begin(ids), std::end(ids), 0);
+    }
+    for (auto& i : ids) {
+      if (i >= bound) i = -1;
+    }
     auto [disk_ids, mem_ids] = MakeSortedIndices(IndexSpan(ids));
     id_cache.emplace_back(std::move(disk_ids));
     auto disk_span = IndexSpan(id_cache.back());
@@ -444,7 +453,7 @@ Result<DataPartition> DataPartition::Make(const Selection& selection,
 
   // In the fixed case, create disk and memory spans
   // over each dimension in FORTRAN order
-  if (result_shape.IsFixed() && !result_shape.HasCellExtents()) {
+  if (result_shape.IsFixed() && !result_shape.HasCellBounds()) {
     std::vector<SpanPairs> dim_subspans;
     dim_subspans.reserve(result_ndim);
     const auto& shape = result_shape.GetShape();
@@ -462,7 +471,7 @@ Result<DataPartition> DataPartition::Make(const Selection& selection,
     return DataPartition{std::move(chunks), result_shape.GetDataType()};
   }
 
-  // In the varying case, or if cell extents vary per row,
+  // In the varying case, or if cell bounds vary per row,
   // start with the row dimension
   auto nrows = result_shape.nRows();
   auto row_dim = result_ndim - 1;
@@ -484,13 +493,15 @@ Result<DataPartition> DataPartition::Make(const Selection& selection,
     // Create span pairs for the secondary dimensions
     for (int dim = 0; dim < row_dim; ++dim) {
       auto [disk_span, mem_span] = [&]() {
-        if (result_shape.HasCellExtents()) {
-          auto extent = result_shape.GetCellExtent(row)[dim];
-          if (extent < row_shape[dim]) {
-            return GetPaddedSpanPair(dim, row_shape[dim], extent);
+        auto span_pair = GetSpanPair(dim, row_shape[dim]);
+        if (result_shape.HasCellBounds() && !span_pair.disk.empty()) {
+          // Sorted disk indices, so the last is the largest
+          auto bound = result_shape.GetCellBound(row)[dim];
+          if (span_pair.disk.back() >= bound) {
+            return GetPaddedSpanPair(dim, row_shape[dim], bound);
           }
         }
-        return GetSpanPair(dim, row_shape[dim]);
+        return span_pair;
       }();
       ARROW_ASSIGN_OR_RAISE(auto spans, MakeSubSpans(disk_span, mem_span, false));
       dim_subspans.emplace_back(std::move(spans));

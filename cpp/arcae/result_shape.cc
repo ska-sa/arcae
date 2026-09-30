@@ -50,8 +50,12 @@ namespace {
 
 bool IsDegenerateShape(const IPosition& shape) { return shape.size() == 0; }
 
+// Validate a result and selection against a cell.
+// Selection indices past the end of the cell are an error when
+// allow_past_cell is false. Otherwise they are not read.
 Status ValidateCellShape(const ColumnDesc& column_desc, const IPosition& cell_shape,
-                         const IPosition& result_shape, const Selection& selection) {
+                         const IPosition& result_shape, const Selection& selection,
+                         bool allow_past_cell) {
   if (result_shape.size() != cell_shape.size()) {
     return Status::Invalid("Result rank ", result_shape.size(),
                            " does not match column rank ", cell_shape.size(),
@@ -59,7 +63,7 @@ Status ValidateCellShape(const ColumnDesc& column_desc, const IPosition& cell_sh
   }
 
   // A selected dimension must match the result dimension
-  // and the selection indices must lie within the cell.
+  // and, unless allowed otherwise, the selection indices must lie within the cell.
   // Unselected dimensions of the result may be smaller than the cell,
   // in which case the cell is truncated, or larger than the cell,
   // in which case the remainder of the result is left untouched.
@@ -71,6 +75,7 @@ Status ValidateCellShape(const ColumnDesc& column_desc, const IPosition& cell_sh
             "Selection size ", span.size(), " does not match the result shape size ",
             result_shape[dim], " in dimension ", dim, " of column ", column_desc.name());
       }
+      if (allow_past_cell) continue;
       for (auto i : span) {
         if (i >= cell_shape[dim]) {
           return Status::IndexError("Selection index ", i, " exceeds dimension ", dim,
@@ -83,37 +88,59 @@ Status ValidateCellShape(const ColumnDesc& column_desc, const IPosition& cell_sh
   return Status::OK();
 }
 
-// Extent of the cell read into the result: the cell shape clipped
-// against the result in unselected dimensions. Selected dimensions
-// take the result shape, as their selection already fits the cell.
-IPosition CellExtent(const IPosition& cell_shape, const IPosition& result_shape,
-                     const Selection& selection) {
-  auto extent = result_shape;
-  for (std::size_t dim = 0; dim < extent.size(); ++dim) {
-    if (!selection.FSpan(dim, extent.size() + 1).ok()) {
-      extent[dim] = std::min(cell_shape[dim], result_shape[dim]);
+// Upper bound on the disk indices read from any cell into the result.
+// An unselected dimension reads the leading elements of the result,
+// while a selected dimension reads up to its largest selection index
+IPosition ReadBound(const IPosition& result_shape, const Selection& selection) {
+  auto bound = result_shape;
+  for (std::size_t dim = 0; dim < bound.size(); ++dim) {
+    if (auto res = selection.FSpan(dim, bound.size() + 1); res.ok()) {
+      IndexType max_index = -1;
+      for (auto i : res.ValueOrDie()) max_index = std::max(max_index, i);
+      bound[dim] = max_index + 1;
     }
   }
-  return extent;
+  return bound;
+}
+
+// Upper bound on the disk indices read from a cell into the result.
+// Indices at or past the bound lie outside the cell and are not read,
+// leaving the associated positions of the result untouched.
+IPosition CellBound(const IPosition& cell_shape, const IPosition& read_bound) {
+  auto bound = read_bound;
+  for (std::size_t dim = 0; dim < bound.size(); ++dim) {
+    bound[dim] = std::min(cell_shape[dim], read_bound[dim]);
+  }
+  return bound;
 }
 
 // Rebuild the selection, substituting the supplied rows (if any)
-// and padding unselected dimensions whose cell extent is smaller
-// than the result with -1 indices
+// and replacing indices at or past the cell bound with -1
 Selection RebuildSelection(const Selection& selection, const IPosition& result_shape,
-                           const IPosition& extent, std::optional<Index> rows) {
+                           const IPosition& read_bound, const IPosition& cell_bound,
+                           std::optional<Index> rows) {
   auto ndim = result_shape.size() + 1;
   SelectionBuilder builder;
   builder.Order('F');
 
   for (std::size_t dim = 0; dim < result_shape.size(); ++dim) {
-    if (auto res = selection.FSpan(dim, ndim); res.ok()) {
+    auto res = selection.FSpan(dim, ndim);
+    if (cell_bound[dim] < read_bound[dim]) {
+      Index ids;
+      if (res.ok()) {
+        auto span = res.ValueOrDie();
+        ids.assign(std::begin(span), std::end(span));
+      } else {
+        ids.resize(result_shape[dim]);
+        std::iota(std::begin(ids), std::end(ids), 0);
+      }
+      for (auto& i : ids) {
+        if (i >= cell_bound[dim]) i = -1;
+      }
+      builder.Add(std::move(ids));
+    } else if (res.ok()) {
       auto span = res.ValueOrDie();
       builder.Add(Index(std::begin(span), std::end(span)));
-    } else if (extent[dim] < result_shape[dim]) {
-      Index ids(result_shape[dim], -1);
-      std::iota(std::begin(ids), std::begin(ids) + extent[dim], 0);
-      builder.Add(std::move(ids));
     } else {
       builder.AddEmpty();
     }
@@ -581,14 +608,18 @@ Result<Selection> ResultShapeData::NegateMissingSelectedRows(const TableColumn& 
   auto cell_result_shape = result_shape.getFirst(result_shape.size() - 1);
   auto column_desc = column.columnDesc();
 
-  // Fixed case, all cells share the same extent
+  auto read_bound = ReadBound(cell_result_shape, selection);
+
+  // Fixed case, all cells share the same bound.
+  // Selection indices past the end of the cell are an error
   if (column_desc.isFixedShape()) {
     const auto& cell_shape = column_desc.shape();
     ARROW_RETURN_NOT_OK(
-        ValidateCellShape(column_desc, cell_shape, cell_result_shape, selection));
-    auto extent = CellExtent(cell_shape, cell_result_shape, selection);
-    if (extent == cell_result_shape) return selection;
-    return RebuildSelection(selection, cell_result_shape, extent, std::nullopt);
+        ValidateCellShape(column_desc, cell_shape, cell_result_shape, selection, false));
+    auto bound = CellBound(cell_shape, read_bound);
+    if (bound == read_bound) return selection;
+    return RebuildSelection(selection, cell_result_shape, read_bound, bound,
+                            std::nullopt);
   };
 
   // Variably shaped colum case
@@ -616,30 +647,32 @@ Result<Selection> ResultShapeData::NegateMissingSelectedRows(const TableColumn& 
     std::iota(std::begin(rows), std::end(rows), 0);
   }
 
-  // Cell extent shared by all defined rows, if any
-  std::optional<IPosition> common_extent;
-  // Per-row cell extents, only populated if extents vary by row
-  std::optional<RowShapes> cell_extents;
+  // Cell bound shared by all defined rows, if any
+  std::optional<IPosition> common_bound;
+  // Per-row cell bounds, only populated if bounds vary by row
+  std::optional<RowShapes> cell_bounds;
 
   for (std::size_t i = 0; i < rows.size(); ++i) {
     auto r = rows[i];
-    // Rows that are not read take the result shape
-    auto extent = cell_result_shape;
+    // Rows that are not read take the read bound
+    auto bound = read_bound;
 
     if (r >= nrow) {
       return Status::IndexError("Row ", r, " in selection is >= nrow ", nrow,
                                 " in column ", column_desc.name());
     } else if (r >= 0 && column.isDefined(r)) {
+      // Selection indices past the end of a variably shaped cell
+      // are not read, as with -1 indices
       auto cell_shape = column.shape(r);
       ARROW_RETURN_NOT_OK(
-          ValidateCellShape(column_desc, cell_shape, cell_result_shape, selection));
-      extent = CellExtent(cell_shape, cell_result_shape, selection);
-      if (!common_extent) {
-        common_extent = extent;
-      } else if (!cell_extents && extent != *common_extent) {
-        // Extents vary by row. Rows preceding this one
-        // either share the common extent or are not read
-        cell_extents = RowShapes(i, *common_extent);
+          ValidateCellShape(column_desc, cell_shape, cell_result_shape, selection, true));
+      bound = CellBound(cell_shape, read_bound);
+      if (!common_bound) {
+        common_bound = bound;
+      } else if (!cell_bounds && bound != *common_bound) {
+        // Bounds vary by row. Rows preceding this one
+        // either share the common bound or are not read
+        cell_bounds = RowShapes(i, *common_bound);
       }
     } else if (r >= 0) {
       // Undefined row, change selection to indicate no read should take place
@@ -648,23 +681,23 @@ Result<Selection> ResultShapeData::NegateMissingSelectedRows(const TableColumn& 
       rows_modified = true;
     }
 
-    if (cell_extents) cell_extents->emplace_back(std::move(extent));
+    if (cell_bounds) cell_bounds->emplace_back(std::move(bound));
   }
 
-  // Extents vary by row, so the data partition pads each row
-  if (cell_extents) {
-    cell_extents_ = std::move(cell_extents);
-    common_extent = cell_result_shape;
-  } else if (!common_extent) {
-    common_extent = cell_result_shape;
+  // Bounds vary by row, so the data partition pads each row
+  if (cell_bounds) {
+    cell_bounds_ = std::move(cell_bounds);
+    common_bound = read_bound;
+  } else if (!common_bound) {
+    common_bound = read_bound;
   }
 
   // No modification, return original selection
-  if (!rows_modified && *common_extent == cell_result_shape) return selection;
+  if (!rows_modified && *common_bound == read_bound) return selection;
 
   // Otherwise add modified rows and pad the selection
   return RebuildSelection(
-      selection, cell_result_shape, *common_extent,
+      selection, cell_result_shape, read_bound, *common_bound,
       rows_modified ? std::make_optional(std::move(rows)) : std::nullopt);
 }
 

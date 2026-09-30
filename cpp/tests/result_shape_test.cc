@@ -289,7 +289,7 @@ TEST_F(ResultShapeTest, NegatePadsAndTruncates) {
            {std::pair{knchan, kncorr}, std::pair{knchan - 1, kncorr},
             std::pair{knchan, kncorr - 1}}) {
         ASSERT_OK_AND_ASSIGN(auto r, Negate(column, nrow, nchan, ncorr, sel));
-        EXPECT_FALSE(r.shape_data.HasCellExtents());
+        EXPECT_FALSE(r.shape_data.HasCellBounds());
         EXPECT_EQ(Ids(r.selection, 0), Ids(sel, 0));
         EXPECT_EQ(Ids(r.selection, 1), Ids(sel, 1));
         EXPECT_EQ(Ids(r.selection, 2), Ids(sel, 2));
@@ -297,7 +297,7 @@ TEST_F(ResultShapeTest, NegatePadsAndTruncates) {
 
       // Oversized results pad the selection with -1
       ASSERT_OK_AND_ASSIGN(auto r, Negate(column, nrow, knchan + 2, kncorr + 1, sel));
-      EXPECT_FALSE(r.shape_data.HasCellExtents());
+      EXPECT_FALSE(r.shape_data.HasCellBounds());
       EXPECT_EQ(Ids(r.selection, 0), Ids_({0, 1, -1}));
       EXPECT_EQ(Ids(r.selection, 1), Ids_({0, 1, 2, 3, -1, -1}));
       EXPECT_EQ(Ids(r.selection, 2), Ids(sel, 2));
@@ -310,40 +310,81 @@ TEST_F(ResultShapeTest, NegatePadsAndTruncates) {
     EXPECT_EQ(Ids(r.selection, 1), Ids_({0, 2}));
     EXPECT_EQ(Ids(r.selection, 2), Ids_({0, 1}));
 
-    // Explicit -1 padding still works and selections must fit the cell
+    // Explicit -1 padding still works
     auto pad_sel = SelectionBuilder::FromInit({{0, 1}, {0, 1, 2, 3, -1, -1}});
     ASSERT_OK(Negate(column, 2, knchan + 2, kncorr, pad_sel));
-    auto bad_sel = SelectionBuilder::FromInit({{0, 1}, {0, int(knchan)}});
-    ASSERT_RAISES(IndexError, Negate(column, 2, 2, kncorr, bad_sel));
   }
+
+  // Selections past the end of a fixed shape cell are an error
+  auto past_sel = SelectionBuilder::FromInit({{0, 1}, {0, int(knchan)}});
+  ASSERT_RAISES(IndexError, Negate(fixed, 2, 2, kncorr, past_sel));
+
+  // but are not read from variably shaped cells
+  ASSERT_OK_AND_ASSIGN(auto past, Negate(var_fixed, 2, 2, kncorr, past_sel));
+  EXPECT_FALSE(past.shape_data.HasCellBounds());
+  EXPECT_EQ(Ids(past.selection, 0), Ids_{});
+  EXPECT_EQ(Ids(past.selection, 1), Ids_({0, -1}));
+  EXPECT_EQ(Ids(past.selection, 2), Ids_({0, 1}));
 
   // Variably shaped rows 2 and 7 share shape (4, 2),
   // so the selection is padded
   ASSERT_OK_AND_ASSIGN(auto r,
                        Negate(var, 2, 3, 6, SelectionBuilder::FromInit({{2, 7}})));
-  EXPECT_FALSE(r.shape_data.HasCellExtents());
+  EXPECT_FALSE(r.shape_data.HasCellBounds());
   EXPECT_EQ(Ids(r.selection, 0), Ids_({0, 1, 2, 3, -1, -1}));
   EXPECT_EQ(Ids(r.selection, 1), Ids_({0, 1, -1}));
   EXPECT_EQ(Ids(r.selection, 2), Ids_({2, 7}));
 
   // Rows 0, 1 and 2 have shapes (3, 2), (4, 1) and (4, 2),
-  // so the cell extents vary per row and the selection is untouched
+  // so the cell bounds vary per row and the selection is untouched
   auto sel = SelectionBuilder::FromInit({{0, 1, 2}});
   ASSERT_OK_AND_ASSIGN(r, Negate(var, 3, 2, 4, sel));
-  ASSERT_TRUE(r.shape_data.HasCellExtents());
-  EXPECT_EQ(r.shape_data.GetCellExtent(0), IPos({3, 2}));
-  EXPECT_EQ(r.shape_data.GetCellExtent(1), IPos({4, 1}));
-  EXPECT_EQ(r.shape_data.GetCellExtent(2), IPos({4, 2}));
+  ASSERT_TRUE(r.shape_data.HasCellBounds());
+  EXPECT_EQ(r.shape_data.GetCellBound(0), IPos({3, 2}));
+  EXPECT_EQ(r.shape_data.GetCellBound(1), IPos({4, 1}));
+  EXPECT_EQ(r.shape_data.GetCellBound(2), IPos({4, 2}));
   EXPECT_EQ(Ids(r.selection, 0), Ids_{});
   EXPECT_EQ(Ids(r.selection, 1), Ids_{});
   EXPECT_EQ(Ids(r.selection, 2), Ids_({0, 1, 2}));
 
   // Truncating and padding in different dimensions
   ASSERT_OK_AND_ASSIGN(r, Negate(var, 3, 1, 4, sel));
-  ASSERT_TRUE(r.shape_data.HasCellExtents());
-  EXPECT_EQ(r.shape_data.GetCellExtent(0), IPos({3, 1}));
-  EXPECT_EQ(r.shape_data.GetCellExtent(1), IPos({4, 1}));
-  EXPECT_EQ(r.shape_data.GetCellExtent(2), IPos({4, 1}));
+  ASSERT_TRUE(r.shape_data.HasCellBounds());
+  EXPECT_EQ(r.shape_data.GetCellBound(0), IPos({3, 1}));
+  EXPECT_EQ(r.shape_data.GetCellBound(1), IPos({4, 1}));
+  EXPECT_EQ(r.shape_data.GetCellBound(2), IPos({4, 1}));
+
+  // Rows 0 and 5 share shape (3, 2), so selection indices
+  // past the end of both cells are negated, regardless of order
+  ASSERT_OK_AND_ASSIGN(
+      r, Negate(var, 2, 2, 3, SelectionBuilder::FromInit({{0, 5}, {1, 0}, {3, 0, 1}})));
+  EXPECT_FALSE(r.shape_data.HasCellBounds());
+  EXPECT_EQ(Ids(r.selection, 0), Ids_({-1, 0, 1}));
+  EXPECT_EQ(Ids(r.selection, 1), Ids_({1, 0}));
+  EXPECT_EQ(Ids(r.selection, 2), Ids_({0, 5}));
+
+  // Rows 3 and 4 have shapes (2, 2) and (2, 1), so the selection
+  // lies entirely past the end of both cells in the first dimension
+  ASSERT_OK_AND_ASSIGN(
+      r, Negate(var, 2, 1, 2, SelectionBuilder::FromInit({{3, 4}, {0}, {2, 3}})));
+  EXPECT_FALSE(r.shape_data.HasCellBounds());
+  EXPECT_EQ(Ids(r.selection, 0), Ids_({-1, -1}));
+  EXPECT_EQ(Ids(r.selection, 1), Ids_({0}));
+
+  // Rows 0 and 2 have shapes (3, 2) and (4, 2), so selection
+  // indices past the end of a cell vary per row
+  auto short_sel = SelectionBuilder::FromInit({{0, 2}, {0, 1}, {0, 1, 2, 3}});
+  ASSERT_OK_AND_ASSIGN(r, Negate(var, 2, 2, 4, short_sel));
+  ASSERT_TRUE(r.shape_data.HasCellBounds());
+  EXPECT_EQ(r.shape_data.GetCellBound(0), IPos({3, 2}));
+  EXPECT_EQ(r.shape_data.GetCellBound(1), IPos({4, 2}));
+  EXPECT_EQ(Ids(r.selection, 0), Ids_({0, 1, 2, 3}));
+  EXPECT_EQ(Ids(r.selection, 1), Ids_({0, 1}));
+  EXPECT_EQ(Ids(r.selection, 2), Ids_({0, 2}));
+
+  // Selections past the end of variably shaped cells
+  // still raise without a result
+  ASSERT_RAISES(IndexError, ResultShapeData::MakeRead(var, short_sel));
 }
 
 TEST_F(ResultShapeTest, ReadVariableSelection) {

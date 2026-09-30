@@ -50,11 +50,12 @@ struct ResultShapeData {
   int ndim_;
   casacore::DataType dtype_;
   std::optional<RowShapes> row_shapes_;
-  // Extent of the cell read from disk for each row of a fixed result.
-  // Only present when a result exceeds the cells of a variably shaped
-  // column in an unselected dimension, and the extents vary by row.
-  // The remainder of the result in that dimension is left untouched.
-  std::optional<RowShapes> cell_extents_ = std::nullopt;
+  // Upper bound on the disk indices read from the cell of each row
+  // of a fixed result. Only present when the result exceeds the cells
+  // of a variably shaped column, either in an unselected dimension or
+  // through selection indices past the end of a cell, and the bounds
+  // vary by row. Result positions at or past the bound are left untouched.
+  std::optional<RowShapes> cell_bounds_ = std::nullopt;
 
   // Return the Column Name
   const std::string& GetName() const noexcept { return column_name_; }
@@ -104,15 +105,15 @@ struct ResultShapeData {
     return row_shapes_->operator[](row);
   }
 
-  // Are there per-row cell extents?
-  bool HasCellExtents() const noexcept { return cell_extents_.has_value(); }
+  // Are there per-row cell bounds?
+  bool HasCellBounds() const noexcept { return cell_bounds_.has_value(); }
 
-  // Return the extent of the cell read from disk for the result row
-  // Requires HasCellExtents() == true.
-  const casacore::IPosition& GetCellExtent(std::size_t row) const noexcept {
-    assert(HasCellExtents());
-    assert(row < cell_extents_->size());
-    return cell_extents_->operator[](row);
+  // Return the upper bound on disk indices read from the cell of the result row
+  // Requires HasCellBounds() == true.
+  const casacore::IPosition& GetCellBound(std::size_t row) const noexcept {
+    assert(HasCellBounds());
+    assert(row < cell_bounds_->size());
+    return cell_bounds_->operator[](row);
   }
 
   // Get the underlying CASA Data Type
@@ -130,8 +131,9 @@ struct ResultShapeData {
 
   // For any degenerate shapes representing missing rows in the ResultShapeData object
   // convert the associated row in the selection to -1.
-  // Where the result exceeds a cell in an unselected dimension,
-  // either pad the selection with -1, or set per-row cell extents
+  // Where the result exceeds a cell in an unselected dimension, or
+  // selection indices lie past the end of a variably shaped cell,
+  // either pad the selection with -1, or set per-row cell bounds
   // if the padding varies by row
   arrow::Result<Selection> NegateMissingSelectedRows(const casacore::TableColumn& column,
                                                      const Selection& selection);

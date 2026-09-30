@@ -418,8 +418,96 @@ def test_getcol_result_explicit_padding(tmp_path, fixed):
     expected[:, 3, :2] = data[:, 0]
     assert_array_equal(T.getcol("VAR", index=index, result=result), expected)
 
-    with pytest.raises(IndexError, match="exceeds dimension"):
-        T.getcol("VAR", index=(None, np.array([0, 2])), result=result[:, :2])
+    # Selections past the end of a cell raise for fixed shape columns,
+    # but are not read from variably shaped columns
+    index = (None, np.array([0, 2]))
+    result = np.full((2, 2, 2), np.nan, np.float32)
+    if fixed:
+        with pytest.raises(IndexError, match="exceeds dimension"):
+            T.getcol("VAR", index=index, result=result)
+    else:
+        expected = np.full((2, 2, 2), np.nan, np.float32)
+        expected[:, 0] = data[:, 0]
+        assert_array_equal(T.getcol("VAR", index=index, result=result), expected)
+
+
+@pytest.mark.parametrize("rows", ["all", "reversed", "subset"])
+@pytest.mark.parametrize(
+    "chan",
+    [
+        [0, 1, 2],
+        [3],
+        [2, 3],
+        [3, 0, 1],
+        [-1, 3, 1],
+        [0, 1, 2, 3],
+        [4, 5],
+    ],
+)
+@pytest.mark.parametrize("ncorr", [1, 2, 3])
+def test_getcol_selection_past_cell(tmp_path, rows, chan, ncorr):
+    """Selection indices past the end of a variably shaped cell
+    are not read and leave the result untouched, as with -1 indices.
+    This supports reading chunks of a maximal shape over ragged cells"""
+    cells = [(4, 2), (2, 2), (3, 1), None, (1, 2)]
+    nrow = len(cells)
+    desc = {"VAR": {"valueType": "float", "ndim": 2, "option": 0, "_c_order": True}}
+    T = Table.from_descriptor(str(tmp_path / "past.table"), table_desc=desc, nrow=nrow)
+    values = []
+    for r, cell in enumerate(cells):
+        value = None
+        if cell is not None:
+            value = (np.arange(np.prod(cell), dtype=np.float32) + 10 * r).reshape(cell)
+            T.putcol("VAR", value[None], index=(np.array([r]),))
+        values.append(value)
+
+    row_ids = {
+        "all": None,
+        "reversed": np.arange(nrow)[::-1].copy(),
+        "subset": np.array([1, 0]),
+    }[rows]
+    selected = np.arange(nrow) if row_ids is None else row_ids
+    chan = np.array(chan)
+
+    # Reference computed per row, in which the selection only
+    # reads channels within the cell and correlations within the result
+    shape = (len(selected), len(chan), ncorr)
+    expected = np.full(shape, np.nan, np.float32)
+    for i, r in enumerate(selected):
+        if (v := values[r]) is None:
+            continue
+        for c, ch in enumerate(chan):
+            if 0 <= ch < v.shape[0]:
+                n = min(v.shape[1], ncorr)
+                expected[i, c, :n] = v[ch, :n]
+
+    result = np.full(shape, np.nan, np.float32)
+    actual = T.getcol("VAR", index=(row_ids, chan), result=result)
+    assert_array_equal(actual, expected)
+    assert_array_equal(result, expected)
+
+    # Without a result buffer, unread positions would be undefined
+    if any(
+        v is not None and chan.max() >= v.shape[0]
+        for v in map(values.__getitem__, selected)
+    ):
+        with pytest.raises(IndexError, match="exceeds dimension"):
+            T.getcol("VAR", index=(row_ids, chan))
+
+
+def test_putcol_selection_past_cell(tmp_path):
+    """Writes past the end of an existing cell still raise"""
+    desc = {"VAR": {"valueType": "float", "ndim": 2, "option": 0, "_c_order": True}}
+    T = Table.from_descriptor(str(tmp_path / "past.table"), table_desc=desc, nrow=2)
+    T.putcol("VAR", np.zeros((1, 4, 2), np.float32), index=(np.array([0]),))
+    T.putcol("VAR", np.zeros((1, 2, 2), np.float32), index=(np.array([1]),))
+
+    with pytest.raises(IndexError):
+        T.putcol(
+            "VAR",
+            np.ones((2, 3, 2), np.float32),
+            index=(np.array([0, 1]), np.arange(3)),
+        )
 
 
 @pytest.mark.parametrize("dtype", [np.float32, np.complex64, np.int32])

@@ -2,8 +2,9 @@
 History
 =======
 
-X.Y.Z (DD-MM-YYYY)
+0.5.7 (02-10-2026)
 ------------------
+* Drop Homebrew python from macOS CI setup (:pr:`250`)
 * Accept read-only index arrays, and fix strided ``int64`` index arrays
   silently selecting the wrong rows (:pr:`248`)
 * Fix a deadlock when a ``Table`` is destroyed shortly after ``getcol`` or

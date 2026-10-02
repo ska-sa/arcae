@@ -5,7 +5,10 @@ brew update
 # /usr/bin first, so every build here uses AppleClang regardless, and
 # llvm has no bottle for macOS 14 or for x86_64 macOS, making it a
 # ~2 hour source build on exactly the runners the wheels are built on.
-brew install bison flex ninja python
+# Homebrew's python is likewise absent: setup-python and cibuildwheel supply
+# the interpreters, and installing it upgrades openssl@3, whose brew link
+# fails on runner images that still link openssl@1.1 into the prefix.
+brew install bison flex ninja
 # gfortran is needed by casacore's casa_scimath_f, both when vcpkg builds
 # casacore from source on a binary cache miss and when linking the C++ test
 # executables. Homebrew's unversioned gcc (16.x) lost its x86_64 macOS bottle

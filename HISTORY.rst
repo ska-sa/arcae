@@ -2,7 +2,7 @@
 History
 =======
 
-X.Y.Z (DD-MM-YYYY)
+0.5.6 (02-10-2026)
 ------------------
 * Accept read-only index arrays, and fix strided ``int64`` index arrays
   silently selecting the wrong rows (:pr:`248`)

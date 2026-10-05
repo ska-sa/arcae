@@ -21,12 +21,13 @@ class NewTableProxy {
   template <typename Fn, typename = std::enable_if<std::is_same_v<
                              detail::ArrowResultType<Fn>,
                              arrow::Result<std::shared_ptr<casacore::TableProxy>>>>>
-  static arrow::Result<std::shared_ptr<NewTableProxy>> Make(Fn&& functor,
-                                                            std::size_t ninstances = 1) {
+  static arrow::Result<std::shared_ptr<NewTableProxy>> Make(
+      Fn&& functor, std::size_t ninstances = 1, detail::ReopenFn reopen = nullptr) {
     struct enable_make_shared_ntp : public NewTableProxy {};
     std::shared_ptr<NewTableProxy> ntp = std::make_shared<enable_make_shared_ntp>();
     ARROW_ASSIGN_OR_RAISE(
-        ntp->itp_, detail::IsolatedTableProxy::Make(std::move(functor), ninstances));
+        ntp->itp_, detail::IsolatedTableProxy::Make(std::forward<Fn>(functor), ninstances,
+                                                    std::move(reopen)));
     return ntp;
   }
 
@@ -112,11 +113,6 @@ class NewTableProxy {
 
   // Close the table
   arrow::Result<bool> Close();
-
- protected:
-  // Returns true if multithreaded writes are supported
-  // by this NewTableProxy
-  arrow::Status SafeMultithreadedWrites() const;
 
  private:
   std::shared_ptr<detail::IsolatedTableProxy> itp_;

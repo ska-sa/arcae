@@ -5,7 +5,7 @@ from typing import Union, TYPE_CHECKING
 if TYPE_CHECKING:
     from arcae.lib.arrow_tables import Table
 
-__version__ = "0.5.7"
+__version__ = "0.4.0-alpha.14"
 
 
 def safe_multithreaded_writes() -> bool:

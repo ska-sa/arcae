@@ -278,6 +278,12 @@ Slicer DataChunk::RowSlicer() const noexcept {
 
 RefRows DataChunk::ReferenceRows() const noexcept {
   auto s = DimensionSpans()[nDim() - 1].disk;
+  // Disk rows are sorted and unique, so they are consecutive
+  // if they span their own length. Represent them as a single slice
+  // rather than allocating a row number per row
+  if (s.size() > 0 && s.front() >= 0 && IndexType(s.size()) == s.back() - s.front() + 1) {
+    return RefRows(s.front(), s.back());
+  }
   return RefRows(Vector<rownr_t>(s.begin(), s.end()), false, false);
 }
 
@@ -408,7 +414,9 @@ Result<DataPartition> DataPartition::Make(const Selection& selection,
   // Spans will be constructed over these vectors
   // Initially, this holds indices that monotically
   // increase up to the maximum dimension size.
-  auto id_cache = std::vector<Index>{Index(result_shape.MaxDimensionSize())};
+  // Constructed in place: an initializer list would copy the vector
+  auto id_cache = std::vector<Index>();
+  id_cache.emplace_back(result_shape.MaxDimensionSize());
   std::iota(id_cache.back().begin(), id_cache.back().end(), 0);
   auto monotonic_ids = IndexSpan(id_cache.back());
   ARROW_ASSIGN_OR_RAISE(auto result_ndim, result_shape.ConsistentNDim());

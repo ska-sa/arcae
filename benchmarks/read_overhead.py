@@ -5,8 +5,8 @@ https://github.com/casangi/xradio/issues/637
 
     python benchmarks/read_overhead.py [--nrow N] [--repeat R] [--case CASE]
 
-Tables are created in a temporary directory. Timings are the best of
-``repeat`` warm runs.
+Tables are created in a temporary directory, unless ``--path`` is given.
+Timings are the best of ``repeat`` warm runs.
 """
 
 import argparse
@@ -96,12 +96,21 @@ def main():
     parser.add_argument("--case", action="append", choices=list(CASES))
     parser.add_argument("--calls", type=int, default=2_000)
     parser.add_argument("--only-arcae", action="store_true")
+    parser.add_argument(
+        "--path",
+        help="Table to create if missing, and reuse. Defaults to a temporary table",
+    )
     args = parser.parse_args()
     cases = args.case or list(CASES)
 
     with tempfile.TemporaryDirectory() as tmp:
-        path = Path(tmp) / "bench.table"
-        create(path, args.nrow)
+        path = Path(args.path) if args.path else Path(tmp) / "bench.table"
+        if not path.exists():
+            create(path, args.nrow)
+
+        with ct.table(str(path), ack=False) as C:
+            if C.nrows() != args.nrow:
+                raise ValueError(f"{path} has {C.nrows()} rows, not {args.nrow}")
         strided = np.arange(0, args.nrow, 2)
 
         with ct.table(str(path), ack=False) as C, arcae.table(str(path)) as A:

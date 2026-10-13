@@ -86,6 +86,8 @@ CASES = {
     "ragged_ssm": ("RAGGED_SSM", None, "getvarcol"),
     "flag_tsm_strided": ("FLAG_TSM", "strided", "getcolnp"),
     "scalar_double_strided": ("TIME", "strided", "getcolnp"),
+    # Every second channel, which is not contiguous in memory
+    "flag_fixed_chan_sel": ("FLAG_FIXED", "channels", "getcolslice"),
 }
 
 
@@ -96,6 +98,7 @@ def main():
     parser.add_argument("--case", action="append", choices=list(CASES))
     parser.add_argument("--calls", type=int, default=2_000)
     parser.add_argument("--only-arcae", action="store_true")
+    parser.add_argument("--ninstances", type=int, default=1)
     parser.add_argument(
         "--path",
         help="Table to create if missing, and reuse. Defaults to a temporary table",
@@ -113,8 +116,10 @@ def main():
                 raise ValueError(f"{path} has {C.nrows()} rows, not {args.nrow}")
         strided = np.arange(0, args.nrow, 2)
 
-        with ct.table(str(path), ack=False) as C, arcae.table(str(path)) as A:
-            print(f"nrow={args.nrow} repeat={args.repeat}")
+        with ct.table(str(path), ack=False) as C, arcae.table(
+            str(path), ninstances=args.ninstances
+        ) as A:
+            print(f"nrow={args.nrow} repeat={args.repeat} ninstances={args.ninstances}")
 
             # Per-call overhead
             calls = args.calls
@@ -147,6 +152,13 @@ def main():
                         # Reads the rows via a reference table
                         with C.selectrows(strided) as S:
                             return S.getcol(column)
+                elif sel == "channels":
+                    index = (None, np.arange(0, SHAPE[0], 2))
+                    nrows = args.nrow
+
+                    def casa_read(column=column, reader=reader):
+                        trc = [SHAPE[0] - 1, SHAPE[1] - 1]
+                        return C.getcolslice(column, [0, 0], trc, [2, 1])
                 else:
                     index = None
                     nrows = args.nrow

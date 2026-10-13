@@ -11,10 +11,14 @@
 #include <vector>
 
 #include <casacore/casa/Arrays/IPosition.h>
+#include <casacore/casa/Exceptions/Error.h>
 #include <casacore/casa/Utilities/DataType.h>
 #include <casacore/casa/aipsxtype.h>
+#include <casacore/tables/DataMan/TSMCube.h>
+#include <casacore/tables/DataMan/TiledShapeStMan.h>
 #include <casacore/tables/Tables/ArrayColumnBase.h>
 #include <casacore/tables/Tables/ColumnDesc.h>
+#include <casacore/tables/Tables/Table.h>
 #include <casacore/tables/Tables/TableColumn.h>
 
 #include <arrow/array/array_base.h>
@@ -181,6 +185,84 @@ class CellShapeClipper {
   std::vector<std::optional<SelectedDim>> dims_;
 };
 
+// Reads the clipped cell shapes of a variably shaped column
+// stored by a TiledShapeStMan directly from its hypercubes.
+// Every row in a hypercube shares the cell shape, so a row costs
+// a hypercube lookup instead of the virtual calls and shape copies
+// behind TableColumn::isDefined and TableColumn::shape, which
+// otherwise dominate reads of columns with small cells
+class TiledShapeReader {
+ public:
+  // Returns nullptr if the column is not stored by a TiledShapeStMan
+  static std::unique_ptr<TiledShapeReader> Make(const TableColumn& column,
+                                                CellShapeClipper& clipper) {
+    // A shape defined for the whole column overrides the hypercubes
+    if (column.shapeColumn().size() != 0) return nullptr;
+    auto table = column.table();
+    const casacore::DataManager* data_manager;
+    try {
+      // Reference tables forward this to their root table
+      data_manager = table.findDataManager(column.columnDesc().name(), true);
+    } catch (const casacore::AipsError&) {
+      return nullptr;
+    }
+    const auto* stman = dynamic_cast<const casacore::TiledShapeStMan*>(data_manager);
+    if (!stman) return nullptr;
+
+    // The table must consist of the data manager's table: a plain table,
+    // or a reference table to it, whose rows map onto it.
+    // Concatenated tables are not handled
+    auto parts = table.getPartNames();
+    if (parts.size() != 1 || parts[0] != stman->table().tableName()) return nullptr;
+    casacore::Vector<rownr_t> root_rows;
+    if (!table.isRootTable()) root_rows = table.rowNumbers();
+
+    return std::unique_ptr<TiledShapeReader>(
+        new TiledShapeReader(stman, std::move(root_rows), clipper));
+  }
+
+  // Is the row in the hypercube whose shape was most recently returned?
+  bool InLastCube(rownr_t row) const { return cube_ && Cube(row) == cube_; }
+
+  // Returns the clipped shape of the cell in row,
+  // or an empty shape if the cell is undefined
+  Result<IPosition> ClippedShape(rownr_t row) {
+    const auto* cube = Cube(row);
+    if (cube != cube_) {
+      cube_ = cube;
+      const auto& cube_shape = cube->cubeShape();
+      // The cell dimensions lead the hypercube dimensions
+      shape_ = cube_shape.empty() ? IPosition() : cube_shape.getFirst(nrcoord_);
+      status_ = cube_shape.empty() ? Status::OK() : clipper_.Clip(shape_);
+    }
+    ARROW_RETURN_NOT_OK(status_);
+    return shape_;
+  }
+
+ private:
+  const casacore::TSMCube* Cube(rownr_t row) const {
+    auto root_row = root_rows_.empty() ? row : root_rows_[row];
+    // TiledShapeStMan hides the public const overload of its base
+    return static_cast<const casacore::TiledStMan*>(stman_)->getHypercube(root_row);
+  }
+
+  TiledShapeReader(const casacore::TiledShapeStMan* stman,
+                   casacore::Vector<rownr_t>&& root_rows, CellShapeClipper& clipper)
+      : stman_(stman),
+        nrcoord_(stman->nrCoordVector()),
+        root_rows_(std::move(root_rows)),
+        clipper_(clipper) {}
+
+  const casacore::TiledShapeStMan* stman_;
+  std::size_t nrcoord_;
+  casacore::Vector<rownr_t> root_rows_;
+  CellShapeClipper& clipper_;
+  // Most recently accessed hypercube and its clipped cell shape
+  const casacore::TSMCube* cube_ = nullptr;
+  IPosition shape_;
+  Status status_;
+};
+
 // Shapes of the selected rows of a variably shaped column
 struct RowShapeData {
   // Shape shared by every row, if no rows are missing
@@ -195,6 +277,7 @@ Result<RowShapeData> MakeRowData(const TableColumn& column, const Selection& sel
                                  bool allow_missing_rows) {
   const auto& column_desc = column.columnDesc();
   auto clipper = CellShapeClipper(column_desc, selection);
+  auto tiled_reader = TiledShapeReader::Make(column, clipper);
 
   // Lambda which gets the shape from the column's row if 0 <= row < nrow
   // If row < 0 or the row is missing and a result shape is present, that
@@ -208,7 +291,10 @@ Result<RowShapeData> MakeRowData(const TableColumn& column, const Selection& sel
     // Get the shape if the row is positive and defined
     // and clip against the selection
     if (r >= 0) {
-      if (column.isDefined(r)) {
+      if (tiled_reader) {
+        ARROW_ASSIGN_OR_RAISE(auto shape, tiled_reader->ClippedShape(r));
+        if (!IsDegenerateShape(shape)) return shape;
+      } else if (column.isDefined(r)) {
         auto shape = column.shape(r);
         ARROW_RETURN_NOT_OK(clipper.Clip(shape));
         return shape;
@@ -234,6 +320,12 @@ Result<RowShapeData> MakeRowData(const TableColumn& column, const Selection& sel
   // Shapes are only stored per row once they vary or a row is missing
   for (std::size_t i = 0; i < nrows; ++i) {
     auto r = has_span ? span[i] : IndexType(i);
+    // While shapes are common, a row in the same hypercube
+    // as the previous row has the common shape
+    if (tiled_reader && result.common_shape && r >= 0 && r < IndexType(column.nrow()) &&
+        tiled_reader->InLastCube(r)) {
+      continue;
+    }
     ARROW_ASSIGN_OR_RAISE(auto shape, GetClippedRowShape(r));
     auto missing = IsDegenerateShape(shape);
     result.missing_rows += missing;

@@ -50,52 +50,57 @@ cdef extern from "arcae/configuration.h" namespace "arcae" nogil:
         vector[string] GetKeys" Configuration::GetKeys"()
         size_t Size" Configuration::Size"()
 
+# The C++ entry points below report errors through arrow::Result.
+# except + is a backstop: any C++ exception that still escapes them
+# raises a Python exception instead of terminating the process
 cdef extern from "arcae/descriptor.h" namespace "arcae" nogil:
     cdef CResult[string] CMSDescriptor" arcae::MSDescriptor"(
-        const string & table, bool complete)
+        const string & table, bool complete) except +
 
 
 cdef extern from "arcae/new_table_proxy.h" namespace "arcae" nogil:
     cdef cppclass CCasaTable" arcae::NewTableProxy":
         @staticmethod
-        CResult[bool] Close" NewTableProxy::Close"()
+        CResult[bool] Close" NewTableProxy::Close"() except +
 
         CResult[shared_ptr[CTable]] ToArrow " NewTableProxy::ToArrow"(
             const CSelection & selection,
-            const vector[string] & columns)
+            const vector[string] & columns) except +
         CResult[shared_ptr[CArray]] GetColumn " NewTableProxy::GetColumn"(
             const string & column,
             const CSelection & selection,
-            shared_ptr[CArray] result)
+            shared_ptr[CArray] result) except +
         CResult[bool] PutColumn " NewTableProxy::PutColumn"(
             const string & column,
             const shared_ptr[CArray] & data,
-            const CSelection & selection)
+            const CSelection & selection) except +
         CResult[shared_ptr[CArray]] GetRowShapes " NewTableProxy::GetRowShapes"(
             const string & column,
-            const CSelection & selection)
-        CResult[string] Name " NewTableProxy::Name"()
-        CResult[string] GetTableDescriptor " NewTableProxy::GetTableDescriptor"()
+            const CSelection & selection) except +
+        CResult[string] Name " NewTableProxy::Name"() except +
+        CResult[string] GetTableDescriptor " NewTableProxy::GetTableDescriptor"(
+            ) except +
         CResult[string] GetColumnDescriptor "NewTableProxy::GetColumnDescriptor"(
-            const string & column)
-        CResult[string] GetDataManagerInfo "NewTableProxy::GetDataManagerInfo"()
-        CResult[string] GetLockOptions "NewTableProxy::GetLockOptions"()
-        CResult[unsigned int] nRows " NewTableProxy::nRows"()
-        CResult[unsigned int] nColumns " NewTableProxy::nColumns"()
-        CResult[vector[string]] Columns " NewTableProxy::Columns"()
-        CResult[bool] AddRows " NewTableProxy::AddRows"(unsigned int nrows)
+            const string & column) except +
+        CResult[string] GetDataManagerInfo "NewTableProxy::GetDataManagerInfo"(
+            ) except +
+        CResult[string] GetLockOptions "NewTableProxy::GetLockOptions"() except +
+        CResult[unsigned int] nRows " NewTableProxy::nRows"() except +
+        CResult[unsigned int] nColumns " NewTableProxy::nColumns"() except +
+        CResult[vector[string]] Columns " NewTableProxy::Columns"() except +
+        CResult[bool] AddRows " NewTableProxy::AddRows"(unsigned int nrows) except +
         CResult[bool] AddColumns " NewTableProxy::AddColumns"(
             const string & json_columndescs,
-            const string & json_dminfo)
-        CResult[bool] IsWritable " NewTableProxy::IsWritable"()
+            const string & json_dminfo) except +
+        CResult[bool] IsWritable " NewTableProxy::IsWritable"() except +
         CResult[string] GetKeywords " NewTableProxy::GetKeywords"(
-            const string & column)
+            const string & column) except +
         CResult[bool] PutKeywords " NewTableProxy::PutKeywords"(
             const string & json_keywords,
-            const string & column)
+            const string & column) except +
         CResult[bool] RemoveKeyword " NewTableProxy::RemoveKeyword"(
             const string & keyword,
-            const string & column)
+            const string & column) except +
 
 
 cdef extern from "arcae/table_factory.h" namespace "arcae" nogil:
@@ -104,23 +109,23 @@ cdef extern from "arcae/table_factory.h" namespace "arcae" nogil:
             size_t ninstances,
             bool readonly,
             const string & json_lockoptions,
-            const string & json_cache_size)
+            const string & json_cache_size) except +
     cdef CResult[shared_ptr[CCasaTable]] CDefaultMS" arcae::DefaultMS"(
             const string & name,
             const string & subtable,
             const string & json_table_desc,
             const string & json_dminfo,
-            const string & json_cache_size)
+            const string & json_cache_size) except +
     cdef CResult[shared_ptr[CCasaTable]] CCreateTable" arcae::CreateTable"(
             const string & name,
             size_t ninstances,
             const string & json_table_desc,
             const string & json_dminfo,
             size_t nrow,
-            const string & json_cache_size)
+            const string & json_cache_size) except +
     cdef CResult[shared_ptr[CCasaTable]] CTaql" arcae::Taql"(
             const string & taql,
-            const vector[shared_ptr[CCasaTable]] & tables)
+            const vector[shared_ptr[CCasaTable]] & tables) except +
 
 cdef extern from "merge_sort.cc" namespace "arcae" nogil:
     cdef enum class MergeType "arcae::MergeType":

@@ -36,6 +36,7 @@ using ::arrow::Result;
 using ::arrow::Status;
 
 using ::casacore::JsonParser;
+using ::casacore::Record;
 using ::casacore::Table;
 using ::casacore::TableProxy;
 
@@ -74,10 +75,15 @@ Result<std::shared_ptr<NewTableProxy>> OpenTable(const std::string& filename,
                                                  const std::string& json_lockoptions,
                                                  const std::string& json_cache_size) {
   ARROW_ASSIGN_OR_RAISE(auto cache_spec, detail::ParseCacheSizeSpec(json_cache_size));
+  Record lock_record;
+  try {
+    lock_record = JsonParser::parse(json_lockoptions).toRecord();
+  } catch (const casacore::AipsError& error) {
+    return Status::Invalid("Unable to parse lockoptions: ", error.what());
+  }
   return NewTableProxy::Make(
-      [&filename, &readonly, &json_lockoptions,
+      [&filename, &readonly, &lock_record,
        &cache_spec]() -> Result<std::shared_ptr<TableProxy>> {
-        auto lock_record = JsonParser::parse(json_lockoptions).toRecord();
         try {
           auto proxy = std::make_shared<TableProxy>(filename, lock_record,
                                                     Table::TableOption::Old);
@@ -245,12 +251,20 @@ Result<std::shared_ptr<NewTableProxy>> Taql(
   // Easy case
   if (tables.size() == 0) {
     return NewTableProxy::Make([taql = taql]() -> Result<std::shared_ptr<TableProxy>> {
-      return std::make_shared<TableProxy>(taql, std::vector<TableProxy>{});
+      try {
+        return std::make_shared<TableProxy>(taql, std::vector<TableProxy>{});
+      } catch (const casacore::AipsError& error) {
+        return Status::Invalid(error.what());
+      }
     });
   } else if (tables.size() == 1) {
     return tables[0]->Spawn(
         [taql = taql](const TableProxy& tp) -> Result<std::shared_ptr<TableProxy>> {
-          return std::make_shared<TableProxy>(taql, std::vector<TableProxy>{tp});
+          try {
+            return std::make_shared<TableProxy>(taql, std::vector<TableProxy>{tp});
+          } catch (const casacore::AipsError& error) {
+            return Status::Invalid(error.what());
+          }
         });
   }
 

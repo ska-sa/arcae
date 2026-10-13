@@ -430,8 +430,18 @@ std::size_t ResultShapeData::MaxDimensionSize() const noexcept {
   return max_size;
 }
 
+std::vector<std::size_t> ResultShapeData::RowOffsets() const noexcept {
+  assert(!IsFixed());
+  std::vector<std::size_t> offsets(nRows() + 1, 0);
+  for (std::size_t r = 0; r < nRows(); ++r) {
+    offsets[r + 1] = offsets[r] + GetRowShape(r).product();
+  }
+  return offsets;
+}
+
 Result<std::size_t> ResultShapeData::FlatOffset(
-    const absl::Span<const IndexType>& index) const noexcept {
+    const absl::Span<const IndexType>& index,
+    const std::vector<std::size_t>* row_offsets) const noexcept {
   ARROW_ASSIGN_OR_RAISE(auto ndim, ConsistentNDim());
   assert(index.size() == std::size_t(ndim));
   std::size_t offset = 0;
@@ -449,11 +459,16 @@ Result<std::size_t> ResultShapeData::FlatOffset(
   // Variable case
   auto row = index[ndim - 1];
   assert(row < IndexType(nRows()));
-  const auto shape = GetRowShape(row);
+  const auto& shape = GetRowShape(row);
 
   for (int d = 0, product = 1; d < int(shape.size()) && d < ndim - 1; ++d) {
     offset += index[d] * product;
     product *= shape[d];
+  }
+
+  if (row_offsets) {
+    assert(row_offsets->size() == nRows() + 1);
+    return offset + (*row_offsets)[row];
   }
 
   return std::accumulate(row_shapes_->begin(), row_shapes_->begin() + row, offset,

@@ -81,9 +81,16 @@ struct ResultShapeData {
   // Maximum dimension size
   std::size_t MaxDimensionSize() const noexcept;
 
-  // Obtain the flat offset at the specified
+  // Obtain the flat offset at the specified index.
+  // In the variable case, row_offsets should hold the result of RowOffsets()
+  // if many offsets are required, as deriving a row's offset without it
+  // sums the elements of all preceding rows
   arrow::Result<std::size_t> FlatOffset(
-      const absl::Span<const IndexType>& index) const noexcept;
+      const absl::Span<const IndexType>& index,
+      const std::vector<std::size_t>* row_offsets = nullptr) const noexcept;
+  // Flat offset of the first element of each row, followed by the
+  // total number of elements. Requires IsFixed() == false.
+  std::vector<std::size_t> RowOffsets() const noexcept;
 
   // Is the result shape fixed?
   bool IsFixed() const noexcept { return shape_.has_value(); }

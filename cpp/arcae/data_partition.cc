@@ -212,6 +212,12 @@ Result<std::vector<DataChunk>> MakeDataChunks(std::vector<SpanPairs>&& dim_spans
   std::vector<DataChunk> chunks(nchunks);
   offset = 0;
 
+  // Computing each chunk's flat offset from scratch is quadratic
+  // in the number of rows of a variably shaped result
+  auto row_offsets =
+      data_shape.IsFixed() ? std::vector<std::size_t>{} : data_shape.RowOffsets();
+  auto* row_offsets_ptr = data_shape.IsFixed() ? nullptr : &row_offsets;
+
   // Iteratively create chunks, pre-computing relevant info
   for (std::size_t chunk = 0; chunk < nchunks; ++chunk) {
     // Compute buffer strides
@@ -249,7 +255,8 @@ Result<std::vector<DataChunk>> MakeDataChunks(std::vector<SpanPairs>&& dim_spans
 
     // Compute flat offsets
     auto min_span = absl::MakeSpan(&shared->min_mem_index_[offset], ndim);
-    ARROW_ASSIGN_OR_RAISE(shared->flat_offsets_[chunk], data_shape.FlatOffset(min_span));
+    ARROW_ASSIGN_OR_RAISE(shared->flat_offsets_[chunk],
+                          data_shape.FlatOffset(min_span, row_offsets_ptr));
 
     // Create the chunk
     chunks[chunk] = DataChunk{chunk, shared};

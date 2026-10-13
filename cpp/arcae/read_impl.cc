@@ -1,9 +1,13 @@
 #include "arcae/read_impl.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <iterator>
 #include <memory>
 #include <string>
+#include <type_traits>
+
+#include <absl/types/span.h>
 
 #include <arrow/api.h>
 #include <arrow/array/array_base.h>
@@ -14,7 +18,6 @@
 #include <arrow/table.h>
 #include <arrow/type.h>
 #include <arrow/type_fwd.h>
-#include <arrow/util/async_generator.h>
 #include <arrow/util/future.h>
 #include <arrow/util/key_value_metadata.h>
 #include <arrow/util/logging.h>
@@ -38,20 +41,14 @@
 using ::arrow::Array;
 using ::arrow::ArrayData;
 using ::arrow::Buffer;
-using ::arrow::CallbackOptions;
-using ::arrow::CollectAsyncGenerator;
 using ::arrow::FixedSizeListArray;
 using ::arrow::Future;
 using ::arrow::Int32Builder;
 using ::arrow::ListArray;
-using ::arrow::MakeMappedGenerator;
-using ::arrow::MakeVectorGenerator;
 using ::arrow::Result;
-using ::arrow::ShouldSchedule;
 using ::arrow::Status;
 using ::arrow::StringBuilder;
 using ::arrow::Table;
-using ::arrow::internal::GetCpuThreadPool;
 
 template <class CT>
 using CasaArray = ::casacore::Array<CT>;
@@ -87,150 +84,160 @@ std::size_t GetSafeAlignment(std::size_t type_size) {
   return type_size;
 }
 
-// Functor implementing dispatch of disk reading functionality
-struct ReadCallback {
-  // Column name
-  std::string column;
-  // Isolated TableProxy
-  std::shared_ptr<IsolatedTableProxy> itp;
-  // Output buffer
-  std::shared_ptr<Buffer> buffer;
-
-  // Read data, dependent on chunk characteristics and CASA data type
-  template <DataType CDT>
-  inline Future<bool> DoRead(const DataChunk& chunk) const {
-    using CT = typename CasaDataTypeTraits<CDT>::CasaType;
-
-    // If the chunk is contiguous in memory, we can read
-    // directly into it's position in the output buffer
-    if (chunk.IsContiguous()) {
-      return itp->RunAsync([column_name = std::move(column), chunk = chunk,
-                            buffer = buffer](const TableProxy& tp) -> Future<bool> {
-        auto out_ptr = buffer->template mutable_data_as<CT>() + chunk.FlatOffset();
-        auto shape = chunk.GetShape();
-        if (shape.size() == 1) {
-          auto column = ScalarColumn<CT>(tp.table(), column_name);
-          auto data = CasaVector<CT>(chunk.GetShape(), out_ptr, casacore::SHARE);
-          column.getColumnCells(chunk.ReferenceRows(), data);
-          return true;
-        }
-        auto column = ArrayColumn<CT>(tp.table(), column_name);
-        auto ref_rows = chunk.ReferenceRows();
-        if (ref_rows.nrows() == 1) {
-          auto data =
-              CasaArray<CT>(chunk.SectionSlicer().length(), out_ptr, casacore::SHARE);
-          column.getSlice(ref_rows.firstRow(), chunk.SectionSlicer(), data);
-          return true;
-        }
-        auto data = CasaArray<CT>(chunk.GetShape(), out_ptr, casacore::SHARE);
-        column.getColumnCells(ref_rows, chunk.SectionSlicer(), data);
-        return true;
-      });
-    }
-
-    // Read column data into a casa array
-    auto read_fut = itp->RunAsync([column_name = std::move(column), chunk = chunk](
-                                      const TableProxy& tp) -> Future<CasaArray<CT>> {
-      if (chunk.nDim() == 1) {
-        auto column = ScalarColumn<CT>(tp.table(), column_name);
-        return column.getColumnCells(chunk.ReferenceRows());
-      }
-      auto column = ArrayColumn<CT>(tp.table(), column_name);
-      auto ref_rows = chunk.ReferenceRows();
-      if (ref_rows.nrows() == 1) {
-        return column.getSlice(ref_rows.firstRow(), chunk.SectionSlicer())
-            .reform(chunk.GetShape());
-      }
-      return column.getColumnCells(ref_rows, chunk.SectionSlicer());
-    });
-
-    // Transpose the array into the output buffer
-    return read_fut.Then(
-        [chunk = chunk, buffer = buffer](const CasaArray<CT>& data) mutable -> bool {
-          std::ptrdiff_t ndim = chunk.nDim();
-          auto spans = chunk.DimensionSpans();
-          auto min_mem = chunk.MinMemIndex();
-          auto chunk_strides = chunk.ChunkStrides();
-          auto buffer_strides = chunk.BufferStrides();
-          const CT* in_ptr = data.data();
-          CT* out_ptr = buffer->template mutable_data_as<CT>() + chunk.FlatOffset();
-          auto pos = chunk.ScratchPositions();
-          for (std::size_t i = 0; i < pos.size(); ++i) pos[i] = 0;
-
-          // Iterate over the spans in memory, copying data
-          for (auto done = false; !done;) {
-            std::size_t i = 0, o = 0;
-            for (std::ptrdiff_t d = 0; d < ndim; ++d) {
-              i += pos[d] * chunk_strides[d];
-              o += (spans[d].mem[pos[d]] - min_mem[d]) * buffer_strides[d];
-            }
-            // Moves degrade to copies for simple (i.e. numeric) types
-            // but it should make casacore::String more efficient by avoiding copies
-            out_ptr[o] = std::move(in_ptr[i]);
-            for (std::ptrdiff_t d = 0; d < ndim; ++d) {  // Iterate in FORTRAN order
-              if (++pos[d] < spans[d].mem.size())
-                break;               // Iteration doesn't reach dim end
-              pos[d] = 0;            // Otherwise reset, next dim
-              done = d + 1 == ndim;  // We're done if the last dimension is reset
-            }
-          }
-
-          return true;
-        },
-        {}, CallbackOptions{ShouldSchedule::Always, GetCpuThreadPool()});
+// Invokes fn(std::integral_constant<DataType, CDT>{}) for the CASA data type
+template <typename Fn>
+auto DispatchCasaType(DataType casa_dtype, Fn&& fn)
+    -> decltype(fn(std::integral_constant<DataType, DataType::TpBool>{})) {
+  switch (casa_dtype) {
+    case DataType::TpBool:
+      return fn(std::integral_constant<DataType, DataType::TpBool>{});
+    case DataType::TpChar:
+      return fn(std::integral_constant<DataType, DataType::TpChar>{});
+    case DataType::TpUChar:
+      return fn(std::integral_constant<DataType, DataType::TpUChar>{});
+    case DataType::TpShort:
+      return fn(std::integral_constant<DataType, DataType::TpShort>{});
+    case DataType::TpUShort:
+      return fn(std::integral_constant<DataType, DataType::TpUShort>{});
+    case DataType::TpInt:
+      return fn(std::integral_constant<DataType, DataType::TpInt>{});
+    case DataType::TpUInt:
+      return fn(std::integral_constant<DataType, DataType::TpUInt>{});
+    case DataType::TpInt64:
+      return fn(std::integral_constant<DataType, DataType::TpInt64>{});
+    case DataType::TpFloat:
+      return fn(std::integral_constant<DataType, DataType::TpFloat>{});
+    case DataType::TpDouble:
+      return fn(std::integral_constant<DataType, DataType::TpDouble>{});
+    case DataType::TpComplex:
+      return fn(std::integral_constant<DataType, DataType::TpComplex>{});
+    case DataType::TpDComplex:
+      return fn(std::integral_constant<DataType, DataType::TpDComplex>{});
+    case DataType::TpString:
+      return fn(std::integral_constant<DataType, DataType::TpString>{});
+    default:
+      return Status::NotImplemented("Data type ", casa_dtype);
   }
+}
 
-  // Read a chunk of data into the encapsulated buffer
-  // returning true on success
-  Future<bool> operator()(const DataChunk& chunk) const {
-    if (!chunk) return Status::Invalid("Invalid chunk");
-    if (chunk.IsEmpty()) return true;
-    switch (chunk.CasaDataType()) {
-      case DataType::TpBool:
-        return DoRead<DataType::TpBool>(chunk);
-        break;
-      case DataType::TpChar:
-        return DoRead<DataType::TpChar>(chunk);
-        break;
-      case DataType::TpUChar:
-        return DoRead<DataType::TpUChar>(chunk);
-        break;
-      case DataType::TpShort:
-        return DoRead<DataType::TpShort>(chunk);
-        break;
-      case DataType::TpUShort:
-        return DoRead<DataType::TpUShort>(chunk);
-        break;
-      case DataType::TpInt:
-        return DoRead<DataType::TpInt>(chunk);
-        break;
-      case DataType::TpUInt:
-        return DoRead<DataType::TpUInt>(chunk);
-        break;
-      case DataType::TpInt64:
-        return DoRead<DataType::TpInt64>(chunk);
-        break;
-      case DataType::TpFloat:
-        return DoRead<DataType::TpFloat>(chunk);
-        break;
-      case DataType::TpDouble:
-        return DoRead<DataType::TpDouble>(chunk);
-        break;
-      case DataType::TpComplex:
-        return DoRead<DataType::TpComplex>(chunk);
-        break;
-      case DataType::TpDComplex:
-        return DoRead<DataType::TpDComplex>(chunk);
-        break;
-      case DataType::TpString:
-        return DoRead<DataType::TpString>(chunk);
-        break;
-      default:
-        return Status::NotImplemented("Column ", column, " with data type ",
-                                      chunk.CasaDataType());
+// Read a chunk that is contiguous in memory
+// directly into its position in the output buffer
+template <typename CT>
+void ReadContiguousChunk(const TableProxy& tp, const std::string& column_name,
+                         const DataChunk& chunk, Buffer& buffer) {
+  auto out_ptr = buffer.template mutable_data_as<CT>() + chunk.FlatOffset();
+  auto shape = chunk.GetShape();
+  if (shape.size() == 1) {
+    auto column = ScalarColumn<CT>(tp.table(), column_name);
+    auto data = CasaVector<CT>(shape, out_ptr, casacore::SHARE);
+    column.getColumnCells(chunk.ReferenceRows(), data);
+    return;
+  }
+  auto column = ArrayColumn<CT>(tp.table(), column_name);
+  auto ref_rows = chunk.ReferenceRows();
+  if (ref_rows.nrows() == 1) {
+    auto data = CasaArray<CT>(chunk.SectionSlicer().length(), out_ptr, casacore::SHARE);
+    column.getSlice(ref_rows.firstRow(), chunk.SectionSlicer(), data);
+    return;
+  }
+  auto data = CasaArray<CT>(shape, out_ptr, casacore::SHARE);
+  column.getColumnCells(ref_rows, chunk.SectionSlicer(), data);
+}
+
+// Read a chunk into a CASA array
+template <typename CT>
+CasaArray<CT> ReadChunkArray(const TableProxy& tp, const std::string& column_name,
+                             const DataChunk& chunk) {
+  if (chunk.nDim() == 1) {
+    auto column = ScalarColumn<CT>(tp.table(), column_name);
+    return column.getColumnCells(chunk.ReferenceRows());
+  }
+  auto column = ArrayColumn<CT>(tp.table(), column_name);
+  auto ref_rows = chunk.ReferenceRows();
+  if (ref_rows.nrows() == 1) {
+    return column.getSlice(ref_rows.firstRow(), chunk.SectionSlicer())
+        .reform(chunk.GetShape());
+  }
+  return column.getColumnCells(ref_rows, chunk.SectionSlicer());
+}
+
+// Transpose a CASA array holding a chunk into its positions in the output buffer
+template <typename CT>
+void CopyChunkArray(DataChunk chunk, const CasaArray<CT>& data, Buffer& buffer) {
+  std::ptrdiff_t ndim = chunk.nDim();
+  auto spans = chunk.DimensionSpans();
+  auto min_mem = chunk.MinMemIndex();
+  auto chunk_strides = chunk.ChunkStrides();
+  auto buffer_strides = chunk.BufferStrides();
+  const CT* in_ptr = data.data();
+  CT* out_ptr = buffer.template mutable_data_as<CT>() + chunk.FlatOffset();
+  auto pos = chunk.ScratchPositions();
+  for (std::size_t i = 0; i < pos.size(); ++i) pos[i] = 0;
+
+  // Iterate over the spans in memory, copying data
+  for (auto done = false; !done;) {
+    std::size_t i = 0, o = 0;
+    for (std::ptrdiff_t d = 0; d < ndim; ++d) {
+      i += pos[d] * chunk_strides[d];
+      o += (spans[d].mem[pos[d]] - min_mem[d]) * buffer_strides[d];
+    }
+    // Moves degrade to copies for simple (i.e. numeric) types
+    // but it should make casacore::String more efficient by avoiding copies
+    out_ptr[o] = std::move(in_ptr[i]);
+    for (std::ptrdiff_t d = 0; d < ndim; ++d) {   // Iterate in FORTRAN order
+      if (++pos[d] < spans[d].mem.size()) break;  // Iteration doesn't reach dim end
+      pos[d] = 0;                                 // Otherwise reset, next dim
+      done = d + 1 == ndim;  // We're done if the last dimension is reset
     }
   }
-};
+}
+
+// Read chunks into the output buffer, in the calling thread.
+// This must be the isolation thread owning tp
+Status ReadChunks(const TableProxy& tp, const std::string& column_name,
+                  DataType casa_dtype, absl::Span<const DataChunk> chunks,
+                  Buffer& buffer) {
+  return DispatchCasaType(casa_dtype, [&](auto cdt) -> Status {
+    using CT = typename CasaDataTypeTraits<decltype(cdt)::value>::CasaType;
+    for (const auto& chunk : chunks) {
+      if (!chunk) return Status::Invalid("Invalid chunk");
+      if (chunk.IsEmpty()) continue;
+      if (chunk.IsContiguous()) {
+        ReadContiguousChunk<CT>(tp, column_name, chunk, buffer);
+      } else {
+        CopyChunkArray<CT>(chunk, ReadChunkArray<CT>(tp, column_name, chunk), buffer);
+      }
+    }
+    return Status::OK();
+  });
+}
+
+// Split chunks into at most ngroups consecutive groups
+// with similar numbers of elements, returning the end of each group
+std::vector<std::size_t> GroupChunks(const std::vector<DataChunk>& chunks,
+                                     std::size_t ngroups) {
+  std::size_t nelements = 0;
+  for (const auto& chunk : chunks) nelements += chunk.nElements();
+  ngroups = std::max<std::size_t>(1, std::min(ngroups, chunks.size()));
+  std::vector<std::size_t> ends;
+  ends.reserve(ngroups);
+  std::size_t cumulative_elements = 0;
+
+  for (std::size_t c = 0; c < chunks.size(); ++c) {
+    cumulative_elements += chunks[c].nElements();
+    // Close the group once it reaches its share of the elements,
+    // leaving at least one chunk for each remaining group
+    auto target = nelements * (ends.size() + 1) / ngroups;
+    auto remaining_groups = ngroups - ends.size() - 1;
+    if (ends.size() + 1 < ngroups &&
+        (cumulative_elements >= target || chunks.size() - c - 1 == remaining_groups)) {
+      ends.push_back(c + 1);
+    }
+  }
+
+  ends.push_back(chunks.size());
+  return ends;
+}
 
 // Extracts the data buffer of the underlying result array
 // ensuring it equals nbytes.
@@ -395,84 +402,93 @@ Future<std::shared_ptr<Array>> ReadImpl(const std::shared_ptr<IsolatedTableProxy
                                         const std::string& column,
                                         const Selection& selection,
                                         const std::shared_ptr<Array>& result) {
-  // Get the shape of the result, given the supplied selection
-  // and the given result array
-  struct ShapeResult {
-    std::shared_ptr<ResultShapeData> shape;
-    std::shared_ptr<Selection> selection;
-  };
-
-  auto shape_fut =
-      itp->RunAsync([column = column, selection = selection, result = result](
-                        const TableProxy& tp) mutable -> Result<ShapeResult> {
-        ARROW_RETURN_NOT_OK(ColumnExists(tp.table(), column));
-        auto table_column = TableColumn(tp.table(), column);
-
-        // If a result array is supplied we can derive ResultShapeData from it
-        // Also iterate over the selected rows and negate any missing rows as
-        // this elides reads in these cases
-        if (result) {
-          ARROW_ASSIGN_OR_RAISE(auto shape_data,
-                                ResultShapeData::FromArray(table_column, result));
-          ARROW_ASSIGN_OR_RAISE(
-              auto modified_selection,
-              shape_data.NegateMissingSelectedRows(table_column, selection));
-          return ShapeResult{std::make_shared<ResultShapeData>(std::move(shape_data)),
-                             std::make_shared<Selection>(std::move(modified_selection))};
-        }
-
-        // Otherwise the ResultShapeData must be derived wholly from
-        // the contents of the column
-        ARROW_ASSIGN_OR_RAISE(auto shape_data,
-                              ResultShapeData::MakeRead(table_column, selection));
-        return ShapeResult{std::make_shared<ResultShapeData>(std::move(shape_data)),
-                           std::make_shared<Selection>(std::move(selection))};
-      });
-
-  // Partition the resulting shape into contiguous chunks
-  // of data to read from disk
+  // Partition the result into contiguous chunks of data to read from disk.
+  // Unless the chunks can be spread across several instances,
+  // read them in the same task: each hand-off between threads
+  // costs more than reading a small column
   struct PartitionResult {
     std::shared_ptr<DataPartition> partition;
     std::shared_ptr<ResultShapeData> shape;
+    // Populated if the chunks were read in the partitioning task
+    std::shared_ptr<Array> array;
   };
-  auto part_fut = shape_fut.Then(
-      [](const ShapeResult& result) mutable -> Result<PartitionResult> {
-        ARROW_ASSIGN_OR_RAISE(auto partition,
-                              DataPartition::Make(*result.selection, *result.shape));
-        return PartitionResult{std::make_shared<DataPartition>(std::move(partition)),
-                               std::move(result.shape)};
-      },
-      {}, CallbackOptions{ShouldSchedule::Always, GetCpuThreadPool()});
 
-  // Read each contiguous chunk of data on disk independently
-  // then create an output array
-  auto read_fut = part_fut.Then(
+  auto fan_out = itp->nInstances() > 1;
+
+  auto part_fut = itp->RunAsync([column = column, selection = selection, result = result,
+                                 fan_out](const TableProxy& tp) mutable
+                                -> Result<PartitionResult> {
+    ARROW_RETURN_NOT_OK(ColumnExists(tp.table(), column));
+    auto table_column = TableColumn(tp.table(), column);
+
+    // Get the shape of the result, given the supplied selection.
+    // If a result array is supplied we can derive ResultShapeData from it
+    // Also iterate over the selected rows and negate any missing rows as
+    // this elides reads in these cases.
+    // Otherwise the ResultShapeData must be derived wholly from
+    // the contents of the column
+    auto shape_data = std::make_shared<ResultShapeData>();
+    if (result) {
+      ARROW_ASSIGN_OR_RAISE(*shape_data,
+                            ResultShapeData::FromArray(table_column, result));
+      ARROW_ASSIGN_OR_RAISE(
+          selection, shape_data->NegateMissingSelectedRows(table_column, selection));
+    } else {
+      ARROW_ASSIGN_OR_RAISE(*shape_data,
+                            ResultShapeData::MakeRead(table_column, selection));
+    }
+
+    ARROW_ASSIGN_OR_RAISE(auto partition, DataPartition::Make(selection, *shape_data));
+    auto shared_partition = std::make_shared<DataPartition>(std::move(partition));
+    if (fan_out && shared_partition->nChunks() > 1) {
+      return PartitionResult{std::move(shared_partition), std::move(shape_data), nullptr};
+    }
+
+    ARROW_ASSIGN_OR_RAISE(
+        auto buffer, GetResultBufferOrAllocate(shared_partition->nElements(),
+                                               shared_partition->GetDataType(), result));
+    ARROW_RETURN_NOT_OK(ReadChunks(tp, column, shared_partition->GetDataType(),
+                                   shared_partition->data_chunks_, *buffer));
+    ARROW_ASSIGN_OR_RAISE(auto array, MakeArray(*shape_data, buffer));
+    return PartitionResult{nullptr, nullptr, std::move(array)};
+  });
+
+  // Otherwise spread groups of chunks across the instances,
+  // reading each group in a single task, then create an output array
+  return part_fut.Then(
       [column = column, itp = itp, result_array = result](
-          const PartitionResult& result) mutable -> Future<std::shared_ptr<Array>> {
+          const PartitionResult& result) -> Future<std::shared_ptr<Array>> {
+        if (result.array) return result.array;
         auto casa_dtype = result.partition->GetDataType();
         auto nelements = result.partition->nElements();
         ARROW_ASSIGN_OR_RAISE(
             auto buffer, GetResultBufferOrAllocate(nelements, casa_dtype, result_array));
 
-        // Make an async generator over the data chunks
-        auto data_chunk_gen =
-            MakeVectorGenerator(std::move(result.partition->TakeChunks()));
-        // Map ReadCallBack over all data chunks
-        auto read_and_copy_data_gen = MakeMappedGenerator(
-            std::move(data_chunk_gen), ReadCallback{std::move(column), itp, buffer});
+        auto chunks = std::make_shared<std::vector<DataChunk>>(
+            std::move(result.partition->TakeChunks()));
+        auto ends = GroupChunks(*chunks, itp->nInstances());
+        std::vector<Future<bool>> reads;
+        reads.reserve(ends.size());
 
-        // Collect the read results
-        auto collect = CollectAsyncGenerator(std::move(read_and_copy_data_gen));
+        for (std::size_t g = 0, begin = 0; g < ends.size(); begin = ends[g++]) {
+          reads.push_back(itp->RunAsync(
+              [column = column, casa_dtype, chunks = chunks, buffer = buffer,
+               begin = begin, end = ends[g]](const TableProxy& tp) -> Result<bool> {
+                auto group = absl::MakeConstSpan(*chunks).subspan(begin, end - begin);
+                ARROW_RETURN_NOT_OK(ReadChunks(tp, column, casa_dtype, group, *buffer));
+                return true;
+              }));
+        }
 
         // Make the array from the now populated buffer
-        return collect.Then([result_shape = result.shape,
-                             buffer = buffer](const std::vector<bool>& result) {
-          return MakeArray(*result_shape, buffer);
-        });
-      },
-      {}, CallbackOptions{ShouldSchedule::Always, GetCpuThreadPool()});
-
-  return read_fut;
+        return arrow::All(std::move(reads))
+            .Then([result_shape = result.shape,
+                   buffer = buffer](const std::vector<Result<bool>>& reads)
+                      -> Result<std::shared_ptr<Array>> {
+              for (const auto& read : reads) ARROW_RETURN_NOT_OK(read);
+              return MakeArray(*result_shape, buffer);
+            });
+      });
 }
 
 Future<std::shared_ptr<Table>> ReadTableImpl(

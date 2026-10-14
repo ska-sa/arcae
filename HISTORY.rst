@@ -2,6 +2,15 @@
 History
 =======
 
+X.Y.Z (DD-MM-YYYY)
+------------------
+* Fix quadratic read times for variably shaped columns whose row shapes
+  differ: reading 100k ragged rows drops from 14 s to 0.15 s (:pr:`254`)
+* Read each column in one task per table instance, more than halving the
+  overhead of small reads (:pr:`254`)
+* Reduce the cost of deriving the shapes of variably shaped columns, and of
+  reading them into a supplied ``result`` array (:pr:`254`)
+
 0.5.7 (02-10-2026)
 ------------------
 * Drop Homebrew python from macOS CI setup (:pr:`250`)

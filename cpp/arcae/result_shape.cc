@@ -196,61 +196,74 @@ Result<RowShapeData> MakeRowData(const TableColumn& column, const Selection& sel
   const auto& column_desc = column.columnDesc();
   auto clipper = CellShapeClipper(column_desc, selection);
 
-  // Lambda which gets the shape from the column's row if 0 <= row < nrow
-  // If row < 0 or the row is missing and a result shape is present, that
-  // shape will be used
-  auto GetClippedRowShape = [&](auto r) -> Result<IPosition> {
-    if (r >= decltype(r)(column.nrow())) {
-      return Status::IndexError("Requested row ", r, " in column ", column_desc.name(),
-                                " >= column.nrow() ", column.nrow());
-    }
-
-    // Get the shape if the row is positive and defined
-    // and clip against the selection
-    if (r >= 0) {
-      if (column.isDefined(r)) {
-        auto shape = column.shape(r);
-        ARROW_RETURN_NOT_OK(clipper.Clip(shape));
-        return shape;
-      }
-      if (allow_missing_rows) return IPosition();
-      return Status::Invalid("Row ", r, " is not defined for column ", column_desc.name(),
-                             " and missing rows ", "are not configured");
-    }
-    if (allow_missing_rows) return IPosition();
-    return Status::IndexError(
-        "Unable to derive a row shape for negative "
-        "row index ",
-        r,
-        ". MakeRowData has likely been "
-        "misused");
-  };
-
   auto has_span = selection.HasRowSpan();
   auto span = has_span ? selection.GetRowSpan() : IndexSpan{};
   auto nrows = has_span ? span.size() : std::size_t(column.nrow());
   RowShapeData result;
 
+  // Records the clipped shape of a row, which is empty if the row is missing.
   // Shapes are only stored per row once they vary or a row is missing
-  for (std::size_t i = 0; i < nrows; ++i) {
-    auto r = has_span ? span[i] : IndexType(i);
-    ARROW_ASSIGN_OR_RAISE(auto shape, GetClippedRowShape(r));
+  auto AddShape = [&](std::size_t i, const IPosition& shape) {
     auto missing = IsDegenerateShape(shape);
     result.missing_rows += missing;
 
     if (result.shapes.empty()) {
       if (!missing && !result.common_shape) {
-        result.common_shape = std::move(shape);
-        continue;
+        result.common_shape = shape;
+        return;
       }
-      if (!missing && shape == *result.common_shape) continue;
+      if (!missing && shape == *result.common_shape) return;
       // All preceding rows share the common shape
       result.shapes.reserve(nrows);
       result.shapes.assign(i, result.common_shape.value_or(IPosition()));
       result.common_shape.reset();
     }
 
-    result.shapes.emplace_back(std::move(shape));
+    result.shapes.push_back(shape);
+  };
+
+  // Shape of the most recent defined row, before and after clipping.
+  // Consecutive rows generally share a shape, and then need not be clipped
+  std::optional<IPosition> last_shape;
+  IPosition last_clipped;
+
+  for (std::size_t i = 0; i < nrows; ++i) {
+    auto r = has_span ? span[i] : IndexType(i);
+    if (r >= IndexType(column.nrow())) {
+      return Status::IndexError("Requested row ", r, " in column ", column_desc.name(),
+                                " >= column.nrow() ", column.nrow());
+    }
+
+    // Negative and undefined rows are missing
+    if (r < 0 || !column.isDefined(r)) {
+      if (allow_missing_rows) {
+        AddShape(i, IPosition());
+        continue;
+      }
+      if (r >= 0) {
+        return Status::Invalid("Row ", r, " is not defined for column ",
+                               column_desc.name(), " and missing rows ",
+                               "are not configured");
+      }
+      return Status::IndexError(
+          "Unable to derive a row shape for negative "
+          "row index ",
+          r,
+          ". MakeRowData has likely been "
+          "misused");
+    }
+
+    auto shape = column.shape(r);
+    if (last_shape && shape == *last_shape) {
+      // While shapes are common, the previous row had the common shape
+      if (!result.shapes.empty()) result.shapes.push_back(last_clipped);
+      continue;
+    }
+
+    last_shape = shape;
+    ARROW_RETURN_NOT_OK(clipper.Clip(shape));
+    last_clipped = shape;
+    AddShape(i, shape);
   }
 
   return result;

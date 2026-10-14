@@ -84,42 +84,6 @@ std::size_t GetSafeAlignment(std::size_t type_size) {
   return type_size;
 }
 
-// Invokes fn(std::integral_constant<DataType, CDT>{}) for the CASA data type
-template <typename Fn>
-auto DispatchCasaType(DataType casa_dtype, Fn&& fn)
-    -> decltype(fn(std::integral_constant<DataType, DataType::TpBool>{})) {
-  switch (casa_dtype) {
-    case DataType::TpBool:
-      return fn(std::integral_constant<DataType, DataType::TpBool>{});
-    case DataType::TpChar:
-      return fn(std::integral_constant<DataType, DataType::TpChar>{});
-    case DataType::TpUChar:
-      return fn(std::integral_constant<DataType, DataType::TpUChar>{});
-    case DataType::TpShort:
-      return fn(std::integral_constant<DataType, DataType::TpShort>{});
-    case DataType::TpUShort:
-      return fn(std::integral_constant<DataType, DataType::TpUShort>{});
-    case DataType::TpInt:
-      return fn(std::integral_constant<DataType, DataType::TpInt>{});
-    case DataType::TpUInt:
-      return fn(std::integral_constant<DataType, DataType::TpUInt>{});
-    case DataType::TpInt64:
-      return fn(std::integral_constant<DataType, DataType::TpInt64>{});
-    case DataType::TpFloat:
-      return fn(std::integral_constant<DataType, DataType::TpFloat>{});
-    case DataType::TpDouble:
-      return fn(std::integral_constant<DataType, DataType::TpDouble>{});
-    case DataType::TpComplex:
-      return fn(std::integral_constant<DataType, DataType::TpComplex>{});
-    case DataType::TpDComplex:
-      return fn(std::integral_constant<DataType, DataType::TpDComplex>{});
-    case DataType::TpString:
-      return fn(std::integral_constant<DataType, DataType::TpString>{});
-    default:
-      return Status::NotImplemented("Data type ", casa_dtype);
-  }
-}
-
 // Read a chunk that is contiguous in memory
 // directly into its position in the output buffer
 template <typename CT>

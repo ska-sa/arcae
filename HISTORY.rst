@@ -2,6 +2,13 @@
 History
 =======
 
+X.Y.Z (DD-MM-YYYY)
+------------------
+* Raise Python exceptions for casacore errors when opening, querying,
+  creating or closing tables, such as TaQL parse errors, missing tables,
+  unknown data managers and invalid lock options, instead of aborting
+  the process (:pr:`253`)
+
 0.5.7 (02-10-2026)
 ------------------
 * Drop Homebrew python from macOS CI setup (:pr:`250`)

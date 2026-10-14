@@ -423,10 +423,10 @@ Result<DataPartition> DataPartition::Make(const Selection& selection,
 
   // Generate disk and memory spans for the specified dimension
   auto GetSpanPair = [&](auto dim, auto dim_size) -> SpanPair {
-    if (auto dim_span = selection.FSpan(dim, result_ndim); dim_span.ok()) {
+    if (auto dim_span = selection.MaybeFSpan(dim, result_ndim)) {
       // Sort selection indices to create
       // disk and memory indices
-      auto [disk_ids, mem_ids] = MakeSortedIndices(dim_span.ValueOrDie());
+      auto [disk_ids, mem_ids] = MakeSortedIndices(*dim_span);
       id_cache.emplace_back(std::move(disk_ids));
       auto disk_span = IndexSpan(id_cache.back());
       id_cache.emplace_back(std::move(mem_ids));

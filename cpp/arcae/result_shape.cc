@@ -64,8 +64,8 @@ Status ValidateCellShape(const ColumnDesc& column_desc, const IPosition& cell_sh
   // in which case the cell is truncated, or larger than the cell,
   // in which case the remainder of the result is left untouched.
   for (std::size_t dim = 0; dim < cell_shape.size(); ++dim) {
-    if (auto result = selection.FSpan(dim, cell_shape.size() + 1); result.ok()) {
-      auto span = result.ValueOrDie();
+    if (auto result = selection.MaybeFSpan(dim, cell_shape.size() + 1)) {
+      auto span = *result;
       if (ssize_t(span.size()) != result_shape[dim]) {
         return Status::IndexError(
             "Selection size ", span.size(), " does not match the result shape size ",
@@ -90,7 +90,7 @@ IPosition CellExtent(const IPosition& cell_shape, const IPosition& result_shape,
                      const Selection& selection) {
   auto extent = result_shape;
   for (std::size_t dim = 0; dim < extent.size(); ++dim) {
-    if (!selection.FSpan(dim, extent.size() + 1).ok()) {
+    if (!selection.MaybeFSpan(dim, extent.size() + 1)) {
       extent[dim] = std::min(cell_shape[dim], result_shape[dim]);
     }
   }
@@ -107,8 +107,8 @@ Selection RebuildSelection(const Selection& selection, const IPosition& result_s
   builder.Order('F');
 
   for (std::size_t dim = 0; dim < result_shape.size(); ++dim) {
-    if (auto res = selection.FSpan(dim, ndim); res.ok()) {
-      auto span = res.ValueOrDie();
+    if (auto res = selection.MaybeFSpan(dim, ndim)) {
+      auto span = *res;
       builder.Add(Index(std::begin(span), std::end(span)));
     } else if (extent[dim] < result_shape[dim]) {
       Index ids(result_shape[dim], -1);
@@ -167,8 +167,8 @@ class CellShapeClipper {
     ndim_ = ndim;
     dims_.assign(ndim, std::nullopt);
     for (std::size_t dim = 0; dim < ndim; ++dim) {
-      if (auto result = selection_.FSpan(dim, ndim + 1); result.ok()) {
-        auto span = result.ValueOrDie();
+      if (auto result = selection_.MaybeFSpan(dim, ndim + 1)) {
+        auto span = *result;
         auto max = *std::max_element(std::begin(span), std::end(span));
         dims_[dim] = SelectedDim{IndexType(span.size()), max};
       }
@@ -906,9 +906,8 @@ Result<ResultShapeData> ResultShapeData::MakeWrite(
   auto CheckAgainstCell = [&](const IPosition& cell_shape, const IPosition& data_shape,
                               std::size_t ndim) -> arrow::Status {
     for (std::ptrdiff_t dim = 0; dim < row_dim; ++dim) {
-      if (auto res = selection.FSpan(dim, ndim); res.ok()) {
-        ARROW_RETURN_NOT_OK(
-            CheckSelectionAgainstShape(res.ValueOrDie(), cell_shape, dim));
+      if (auto res = selection.MaybeFSpan(dim, ndim)) {
+        ARROW_RETURN_NOT_OK(CheckSelectionAgainstShape(*res, cell_shape, dim));
       } else if (data_shape[dim] > cell_shape[dim]) {
         return Status::IndexError("Data shape ", data_shape, " exceeds cell shape ",
                                   cell_shape, " in dimension ", dim, " of column ",
@@ -924,8 +923,8 @@ Result<ResultShapeData> ResultShapeData::MakeWrite(
   for (std::size_t r = 0; r < ndata_rows; ++r) {
     auto data_shape = DataRowShape(r);
     for (std::ptrdiff_t dim = 0; dim < row_dim; ++dim) {
-      if (auto res = selection.FSpan(dim, shape_ndim); res.ok()) {
-        auto span = res.ValueOrDie();
+      if (auto res = selection.MaybeFSpan(dim, shape_ndim)) {
+        auto span = *res;
         if (ssize_t(span.size()) != data_shape[dim]) {
           return Status::IndexError(
               "Selection size ", span.size(), " does not match data size ",
@@ -970,8 +969,8 @@ Result<ResultShapeData> ResultShapeData::MakeWrite(
         auto row_shape = DataRowShape(r);
 
         for (std::ptrdiff_t dim = 0; dim < row_dim; ++dim) {
-          if (auto res = selection.FSpan(dim, shape_ndim); res.ok()) {
-            auto span = res.ValueOrDie();
+          if (auto res = selection.MaybeFSpan(dim, shape_ndim)) {
+            auto span = *res;
             auto span_max = *std::max_element(std::begin(span), std::end(span));
             row_shape[dim] = std::max<ssize_t>(span_max + 1, row_shape[dim]);
           }

@@ -108,14 +108,22 @@ Result<bool> IsolatedTableProxy::Close() {
         }
         continue;
       }
-      results.push_back(arrow::DeferNotOk(pool->Submit([tp = proxy]() {
-        tp->close();
+      results.push_back(arrow::DeferNotOk(pool->Submit([tp = proxy]() -> Result<bool> {
+        // An exception escaping a pool thread terminates the process
+        try {
+          tp->close();
+        } catch (const std::exception& e) {
+          return Status::Invalid("Error closing table: ", e.what());
+        }
         return true;
       })));
     }
     auto all_done = arrow::All(results);
     all_done.Wait();
     ARROW_RETURN_NOT_OK(inline_status);
+    for (const auto& result : all_done.result().ValueOrDie()) {
+      ARROW_RETURN_NOT_OK(result.status());
+    }
     return true;
   }
   return false;

@@ -16,6 +16,7 @@
 
 #include <tests/test_utils.h>
 
+#include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
 #include "arcae/isolated_table_proxy.h"
@@ -211,6 +212,39 @@ TEST_F(IsolatedTableProxyTest, DestroyOnIsolationThread) {
 
   EXPECT_TRUE(WaitForExpiry(weak_proxy))
       << "Table was never closed: teardown deadlocked on its isolation thread";
+}
+
+// An exception escaping an isolation thread terminates the process,
+// so exceptions thrown while opening a table must become a Status
+TEST_F(IsolatedTableProxyTest, MakeCatchesExceptions) {
+  using ResultType = arrow::Result<std::shared_ptr<TableProxy>>;
+
+  EXPECT_RAISES_WITH_MESSAGE_THAT(
+      Invalid, ::testing::HasSubstr("casacore open failure"),
+      IsolatedTableProxy::Make(
+          []() -> ResultType { throw casacore::AipsError("casacore open failure"); }, 2));
+
+  EXPECT_RAISES_WITH_MESSAGE_THAT(
+      Invalid, ::testing::HasSubstr("std open failure"),
+      IsolatedTableProxy::Make(
+          []() -> ResultType { throw std::runtime_error("std open failure"); }, 2));
+}
+
+// Spawn creates reference tables, for e.g. TaQL queries, on the parent's
+// isolation threads. Exceptions thrown there must become a Status
+TEST_F(IsolatedTableProxyTest, SpawnCatchesExceptions) {
+  using ResultType = arrow::Result<std::shared_ptr<TableProxy>>;
+  ASSERT_OK_AND_ASSIGN(auto itp, OpenTable());
+
+  EXPECT_RAISES_WITH_MESSAGE_THAT(Invalid, ::testing::HasSubstr("spawn failure"),
+                                  itp->Spawn([](const TableProxy&) -> ResultType {
+                                    throw casacore::AipsError("spawn failure");
+                                  }));
+
+  // The parent remains usable
+  ASSERT_OK_AND_ASSIGN(
+      auto nrow, itp->RunSync([](const TableProxy& tp) { return tp.table().nrow(); }));
+  EXPECT_EQ(nrow, knrow);
 }
 
 }  // namespace

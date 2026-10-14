@@ -1,17 +1,19 @@
 """Reads of variably shaped columns, checked against python-casacore.
 
-StandardStMan columns derive cell shapes through casacore's generic column
-interface, while TiledShapeStMan columns read them from the hypercubes.
+Covers StandardStMan and TiledShapeStMan columns,
+in plain tables and TaQL reference tables.
 """
 
 import numpy as np
 import pyarrow as pa
 import pytest
-from casacore import tables as ct
 from numpy.testing import assert_array_equal
 
 import arcae
 from arcae.lib.arrow_tables import Table
+
+# python-casacore provides the expected values, and has no wheels for some platforms
+ct = pytest.importorskip("casacore.tables")
 
 NROW = 40
 SMALL = (4, 2)

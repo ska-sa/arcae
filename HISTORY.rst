@@ -10,6 +10,11 @@ X.Y.Z (DD-MM-YYYY)
   overhead of small reads (:pr:`254`)
 * Reduce the cost of deriving the shapes of variably shaped columns, and of
   reading them into a supplied ``result`` array (:pr:`254`)
+* Write each column in one task, more than halving the overhead of small
+  writes (:pr:`255`)
+* Reduce the cost of checking writes to variably shaped columns (:pr:`255`)
+* Pass ``bool`` arrays to ``putcol`` without converting them to and from an
+  Arrow bitmap (:pr:`255`)
 
 0.5.7 (02-10-2026)
 ------------------

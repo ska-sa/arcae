@@ -872,42 +872,50 @@ Result<ResultShapeData> ResultShapeData::MakeWrite(
   // No secondary dimensions, exit early
   if (row_dim <= 0) return shape_data;
 
-  // Check a selection against a cell shape. Negative indices are not written,
-  // so only the non-negative indices must fit within the cell
-  auto CheckSelectionAgainstShape = [&](const IndexSpan& span, const IPosition& shape,
-                                        std::size_t dim) -> arrow::Status {
-    auto nselected =
-        std::count_if(std::begin(span), std::end(span), [](auto i) { return i >= 0; });
-    if (ssize_t(nselected) > shape[dim]) {
-      return Status::IndexError("Selection size ", nselected,
-                                " exceeds the dimension size ", shape[dim],
-                                " of dimension ", dim, " in column ", column_desc.name());
-    }
-    for (std::size_t i = 0; i < span.size(); ++i) {
-      if (span[i] >= shape[dim]) {
-        return Status::IndexError("Selection ", span[i], " exceeds the dimension size ",
-                                  shape[dim], " of dimension ", dim, " in column ",
-                                  column_desc.name());
-      }
-    }
-    return Status::OK();
+  // Summarise the selection of each secondary dimension once,
+  // as the checks below are made for every row
+  struct DimSelection {
+    IndexSpan span;
+    // Negative indices are not written,
+    // so only the non-negative indices must fit within a cell
+    std::size_t nselected;
+    IndexType max_index;
   };
+  auto dim_selections = std::vector<std::optional<DimSelection>>(row_dim);
+  for (std::ptrdiff_t dim = 0; dim < row_dim; ++dim) {
+    if (auto res = selection.MaybeFSpan(dim, shape_ndim)) {
+      auto span = *res;
+      auto nselected =
+          std::count_if(std::begin(span), std::end(span), [](auto i) { return i >= 0; });
+      auto max_index = *std::max_element(std::begin(span), std::end(span));
+      dim_selections[dim] = DimSelection{span, std::size_t(nselected), max_index};
+    }
+  }
 
   // Shape of the data in row r of the input, excluding the row dimension
-  auto DataRowShape = [&](std::size_t r) -> IPosition {
-    if (!shape_data.IsFixed()) return shape_data.GetRowShape(r);
-    const auto& shape = shape_data.GetShape();
-    return shape.getFirst(shape.size() - 1);
+  auto fixed_data_shape =
+      shape_data.IsFixed() ? shape_data.GetShape().getFirst(row_dim) : IPosition();
+  auto DataRowShape = [&](std::size_t r) -> const IPosition& {
+    return shape_data.IsFixed() ? fixed_data_shape : shape_data.GetRowShape(r);
   };
 
   // Check the data and selection against an existing cell.
   // Selected dimensions must fit within the cell, while unselected
   // dimensions of the data may not exceed the cell
-  auto CheckAgainstCell = [&](const IPosition& cell_shape, const IPosition& data_shape,
-                              std::size_t ndim) -> arrow::Status {
+  auto CheckAgainstCell = [&](const IPosition& cell_shape,
+                              const IPosition& data_shape) -> arrow::Status {
     for (std::ptrdiff_t dim = 0; dim < row_dim; ++dim) {
-      if (auto res = selection.MaybeFSpan(dim, ndim)) {
-        ARROW_RETURN_NOT_OK(CheckSelectionAgainstShape(*res, cell_shape, dim));
+      if (const auto& dim_selection = dim_selections[dim]) {
+        if (ssize_t(dim_selection->nselected) > cell_shape[dim]) {
+          return Status::IndexError(
+              "Selection size ", dim_selection->nselected, " exceeds the dimension size ",
+              cell_shape[dim], " of dimension ", dim, " in column ", column_desc.name());
+        }
+        if (dim_selection->max_index >= cell_shape[dim]) {
+          return Status::IndexError(
+              "Selection ", dim_selection->max_index, " exceeds the dimension size ",
+              cell_shape[dim], " of dimension ", dim, " in column ", column_desc.name());
+        }
       } else if (data_shape[dim] > cell_shape[dim]) {
         return Status::IndexError("Data shape ", data_shape, " exceeds cell shape ",
                                   cell_shape, " in dimension ", dim, " of column ",
@@ -921,13 +929,12 @@ Result<ResultShapeData> ResultShapeData::MakeWrite(
   // in the selection, so selections must match the data dimensions
   auto ndata_rows = shape_data.IsFixed() ? 1 : shape_data.nRows();
   for (std::size_t r = 0; r < ndata_rows; ++r) {
-    auto data_shape = DataRowShape(r);
+    const auto& data_shape = DataRowShape(r);
     for (std::ptrdiff_t dim = 0; dim < row_dim; ++dim) {
-      if (auto res = selection.MaybeFSpan(dim, shape_ndim)) {
-        auto span = *res;
-        if (ssize_t(span.size()) != data_shape[dim]) {
+      if (const auto& dim_selection = dim_selections[dim]) {
+        if (ssize_t(dim_selection->span.size()) != data_shape[dim]) {
           return Status::IndexError(
-              "Selection size ", span.size(), " does not match data size ",
+              "Selection size ", dim_selection->span.size(), " does not match data size ",
               data_shape[dim], " in dimension ", dim, " of column ", column_desc.name());
         }
       }
@@ -936,10 +943,8 @@ Result<ResultShapeData> ResultShapeData::MakeWrite(
 
   if (column_desc.isFixedShape()) {
     const auto& shape = column.shapeColumn();
-    ARROW_ASSIGN_OR_RAISE(auto ndim, shape_data.ConsistentNDim());
-    auto nrows = ndata_rows;
-    for (std::size_t r = 0; r < nrows; ++r) {
-      ARROW_RETURN_NOT_OK(CheckAgainstCell(shape, DataRowShape(r), ndim));
+    for (std::size_t r = 0; r < ndata_rows; ++r) {
+      ARROW_RETURN_NOT_OK(CheckAgainstCell(shape, DataRowShape(r)));
     }
   } else {
     auto array_column = ArrayColumnBase(column);
@@ -949,30 +954,37 @@ Result<ResultShapeData> ResultShapeData::MakeWrite(
     IndexType nrows = has_row_span
                           ? row_span.size()
                           : std::min<IndexType>(column.nrow(), shape_data.nRows());
-    ARROW_ASSIGN_OR_RAISE(auto shape_ndim, shape_data.ConsistentNDim());
+    // Consecutive rows commonly share their cell and data shapes,
+    // in which case they pass the same checks
+    std::optional<IPosition> last_cell_shape;
+    const IPosition* last_data_shape = nullptr;
 
     for (IndexType r = 0; r < nrows; ++r) {
       IndexType row = has_row_span ? row_span[r] : r;
       if (row < 0) continue;  // Don't check negative row indices
+      // r is used to index the data, as opposed to
+      // row, which is the output location on disk
+      const auto& data_shape = DataRowShape(r);
       // If the row is defined, check the data and selection
       // against the shape of the row
       if (column.isDefined(row)) {
-        ARROW_RETURN_NOT_OK(
-            CheckAgainstCell(column.shape(row), DataRowShape(r), shape_ndim));
+        auto cell_shape = column.shape(row);
+        if (last_cell_shape && cell_shape == *last_cell_shape &&
+            data_shape == *last_data_shape) {
+          continue;
+        }
+        ARROW_RETURN_NOT_OK(CheckAgainstCell(cell_shape, data_shape));
+        last_cell_shape = std::move(cell_shape);
+        last_data_shape = &data_shape;
       } else {
         // The row is undefined
-        // Set the row shape from the shape of the result,
-        // taking any maximum selection into account.
-        // r is used here as we want the shape from
-        // the row in the result shape, as opposed to
-        // the output location on disk
-        auto row_shape = DataRowShape(r);
-
+        // Set the row shape from the shape of the data,
+        // taking any maximum selection into account
+        auto row_shape = data_shape;
         for (std::ptrdiff_t dim = 0; dim < row_dim; ++dim) {
-          if (auto res = selection.MaybeFSpan(dim, shape_ndim)) {
-            auto span = *res;
-            auto span_max = *std::max_element(std::begin(span), std::end(span));
-            row_shape[dim] = std::max<ssize_t>(span_max + 1, row_shape[dim]);
+          if (const auto& dim_selection = dim_selections[dim]) {
+            row_shape[dim] =
+                std::max<ssize_t>(dim_selection->max_index + 1, row_shape[dim]);
           }
         }
         array_column.setShape(row, row_shape);

@@ -188,6 +188,7 @@ class IsolatedTableProxy : public std::enable_shared_from_this<IsolatedTableProx
     std::shared_ptr<IsolatedTableProxy> proxy =
         std::make_shared<enable_make_shared_itp>();
     proxy->proxy_pools_.reserve(ninstances);
+    using ResultType = arrow::Result<std::shared_ptr<casacore::TableProxy>>;
     auto fwd_functor = std::forward<Fn>(functor);
 
     // Mark as closed so that if construction fails, we don't try to close it
@@ -196,7 +197,16 @@ class IsolatedTableProxy : public std::enable_shared_from_this<IsolatedTableProx
     // Create ninstances I/O pools
     for (std::size_t i = 0; i < ninstances; ++i) {
       ARROW_ASSIGN_OR_RAISE(auto io_pool, ::arrow::internal::ThreadPool::Make(1));
-      auto table_fut = arrow::DeferNotOk(io_pool->Submit(fwd_functor));
+      auto table_fut =
+          arrow::DeferNotOk(io_pool->Submit([fn = fwd_functor]() mutable -> ResultType {
+            try {
+              return std::invoke(fn);
+            } catch (casacore::AipsError& e) {
+              return arrow::Status::Invalid("Unhandled casacore exception: ", e.what());
+            } catch (std::exception& e) {
+              return arrow::Status::Invalid("Unhandled exception: ", e.what());
+            }
+          }));
       ARROW_ASSIGN_OR_RAISE(auto table_proxy, table_fut.MoveResult());
       proxy->proxy_pools_.push_back(
           ProxyAndPool{std::move(table_proxy), std::move(io_pool)});
@@ -227,7 +237,13 @@ class IsolatedTableProxy : public std::enable_shared_from_this<IsolatedTableProx
     for (std::size_t i = 0; i < proxy_pools_.size(); ++i) {
       auto future = arrow::DeferNotOk(
           GetPool(i)->Submit([this, i = i, fn = fwd_functor]() -> ResultType {
-            return std::invoke(fn, *GetProxy(i));
+            try {
+              return std::invoke(fn, *GetProxy(i));
+            } catch (casacore::AipsError& e) {
+              return arrow::Status::Invalid("Unhandled casacore exception: ", e.what());
+            } catch (std::exception& e) {
+              return arrow::Status::Invalid("Unhandled exception: ", e.what());
+            }
           }));
 
       ARROW_ASSIGN_OR_RAISE(auto table_proxy, future.MoveResult());

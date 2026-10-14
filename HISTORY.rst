@@ -10,6 +10,10 @@ X.Y.Z (DD-MM-YYYY)
   overhead of small reads (:pr:`254`)
 * Reduce the cost of deriving the shapes of variably shaped columns, and of
   reading them into a supplied ``result`` array (:pr:`254`)
+* Raise Python exceptions for casacore errors when opening, querying,
+  creating or closing tables, such as TaQL parse errors, missing tables,
+  unknown data managers and invalid lock options, instead of aborting
+  the process (:pr:`253`)
 
 0.5.7 (02-10-2026)
 ------------------

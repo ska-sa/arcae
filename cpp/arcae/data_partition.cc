@@ -212,6 +212,12 @@ Result<std::vector<DataChunk>> MakeDataChunks(std::vector<SpanPairs>&& dim_spans
   std::vector<DataChunk> chunks(nchunks);
   offset = 0;
 
+  // Computing each chunk's flat offset from scratch is quadratic
+  // in the number of rows of a variably shaped result
+  auto row_offsets =
+      data_shape.IsFixed() ? std::vector<std::size_t>{} : data_shape.RowOffsets();
+  auto* row_offsets_ptr = data_shape.IsFixed() ? nullptr : &row_offsets;
+
   // Iteratively create chunks, pre-computing relevant info
   for (std::size_t chunk = 0; chunk < nchunks; ++chunk) {
     // Compute buffer strides
@@ -249,7 +255,8 @@ Result<std::vector<DataChunk>> MakeDataChunks(std::vector<SpanPairs>&& dim_spans
 
     // Compute flat offsets
     auto min_span = absl::MakeSpan(&shared->min_mem_index_[offset], ndim);
-    ARROW_ASSIGN_OR_RAISE(shared->flat_offsets_[chunk], data_shape.FlatOffset(min_span));
+    ARROW_ASSIGN_OR_RAISE(shared->flat_offsets_[chunk],
+                          data_shape.FlatOffset(min_span, row_offsets_ptr));
 
     // Create the chunk
     chunks[chunk] = DataChunk{chunk, shared};
@@ -271,6 +278,12 @@ Slicer DataChunk::RowSlicer() const noexcept {
 
 RefRows DataChunk::ReferenceRows() const noexcept {
   auto s = DimensionSpans()[nDim() - 1].disk;
+  // Disk rows are sorted and unique, so they are consecutive
+  // if they span their own length. Represent them as a single slice
+  // rather than allocating a row number per row
+  if (s.size() > 0 && s.front() >= 0 && IndexType(s.size()) == s.back() - s.front() + 1) {
+    return RefRows(s.front(), s.back());
+  }
   return RefRows(Vector<rownr_t>(s.begin(), s.end()), false, false);
 }
 
@@ -401,17 +414,19 @@ Result<DataPartition> DataPartition::Make(const Selection& selection,
   // Spans will be constructed over these vectors
   // Initially, this holds indices that monotically
   // increase up to the maximum dimension size.
-  auto id_cache = std::vector<Index>{Index(result_shape.MaxDimensionSize())};
+  // Constructed in place: an initializer list would copy the vector
+  auto id_cache = std::vector<Index>();
+  id_cache.emplace_back(result_shape.MaxDimensionSize());
   std::iota(id_cache.back().begin(), id_cache.back().end(), 0);
   auto monotonic_ids = IndexSpan(id_cache.back());
   ARROW_ASSIGN_OR_RAISE(auto result_ndim, result_shape.ConsistentNDim());
 
   // Generate disk and memory spans for the specified dimension
   auto GetSpanPair = [&](auto dim, auto dim_size) -> SpanPair {
-    if (auto dim_span = selection.FSpan(dim, result_ndim); dim_span.ok()) {
+    if (auto dim_span = selection.MaybeFSpan(dim, result_ndim)) {
       // Sort selection indices to create
       // disk and memory indices
-      auto [disk_ids, mem_ids] = MakeSortedIndices(dim_span.ValueOrDie());
+      auto [disk_ids, mem_ids] = MakeSortedIndices(*dim_span);
       id_cache.emplace_back(std::move(disk_ids));
       auto disk_span = IndexSpan(id_cache.back());
       id_cache.emplace_back(std::move(mem_ids));

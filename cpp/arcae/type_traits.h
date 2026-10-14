@@ -161,6 +161,46 @@ struct CasaDataTypeTraits<casacore::DataType::TpString> {
   static constexpr bool is_complex = false;
 };
 
+// Compile time constant holding a CASA data type
+template <casacore::DataType CDT>
+using CasaDataTypeConstant = std::integral_constant<casacore::DataType, CDT>;
+
+// Invokes fn(CasaDataTypeConstant<CDT>{}) for the CASA data type CDT
+template <typename Fn>
+auto DispatchCasaType(casacore::DataType casa_dtype, Fn&& fn)
+    -> decltype(fn(CasaDataTypeConstant<casacore::DataType::TpBool>{})) {
+  switch (casa_dtype) {
+    case casacore::DataType::TpBool:
+      return fn(CasaDataTypeConstant<casacore::DataType::TpBool>{});
+    case casacore::DataType::TpChar:
+      return fn(CasaDataTypeConstant<casacore::DataType::TpChar>{});
+    case casacore::DataType::TpUChar:
+      return fn(CasaDataTypeConstant<casacore::DataType::TpUChar>{});
+    case casacore::DataType::TpShort:
+      return fn(CasaDataTypeConstant<casacore::DataType::TpShort>{});
+    case casacore::DataType::TpUShort:
+      return fn(CasaDataTypeConstant<casacore::DataType::TpUShort>{});
+    case casacore::DataType::TpInt:
+      return fn(CasaDataTypeConstant<casacore::DataType::TpInt>{});
+    case casacore::DataType::TpUInt:
+      return fn(CasaDataTypeConstant<casacore::DataType::TpUInt>{});
+    case casacore::DataType::TpInt64:
+      return fn(CasaDataTypeConstant<casacore::DataType::TpInt64>{});
+    case casacore::DataType::TpFloat:
+      return fn(CasaDataTypeConstant<casacore::DataType::TpFloat>{});
+    case casacore::DataType::TpDouble:
+      return fn(CasaDataTypeConstant<casacore::DataType::TpDouble>{});
+    case casacore::DataType::TpComplex:
+      return fn(CasaDataTypeConstant<casacore::DataType::TpComplex>{});
+    case casacore::DataType::TpDComplex:
+      return fn(CasaDataTypeConstant<casacore::DataType::TpDComplex>{});
+    case casacore::DataType::TpString:
+      return fn(CasaDataTypeConstant<casacore::DataType::TpString>{});
+    default:
+      return arrow::Status::NotImplemented("Data type ", casa_dtype);
+  }
+}
+
 }  // namespace detail
 }  // namespace arcae
 

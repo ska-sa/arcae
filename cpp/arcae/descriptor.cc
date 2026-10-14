@@ -323,6 +323,20 @@ Result<Record> ParseRecord(const std::string& json, const char* what) {
   }
 }
 
+// Create a SetupNewTable, binding any data manager info to its columns.
+// casacore throws on an unknown data manager type, among other things,
+// which would terminate the process when this runs on a pool thread
+Result<SetupNewTable> MakeSetupNewTable(const std::string& name, const TableDesc& desc,
+                                        const Record& dminfo) {
+  try {
+    SetupNewTable setup = SetupNewTable(name, desc, Table::New);
+    setup.bindCreate(dminfo);
+    return setup;
+  } catch (const casacore::AipsError& error) {
+    return arrow::Status::Invalid("Unable to set up table ", name, ": ", error.what());
+  }
+}
+
 }  // namespace
 
 // Get the table descriptions for the given table.
@@ -354,14 +368,8 @@ Result<SetupNewTable> DefaultMSFactory(const std::string& name,
   // Merge required and user table descriptions
   TableDesc final_desc = MergeRequiredAndUserTableDescs(required_desc, user_td);
 
-  // Return SetupNewTable object
-  SetupNewTable setup = SetupNewTable(name, final_desc, Table::New);
-
-  // Apply any data manager info
   ARROW_ASSIGN_OR_RAISE(auto dminfo, ParseRecord(json_dminfo, "dminfo"));
-  setup.bindCreate(dminfo);
-
-  return setup;
+  return MakeSetupNewTable(name, final_desc, dminfo);
 }
 
 Result<SetupNewTable> TableFactory(const std::string& name,
@@ -378,14 +386,8 @@ Result<SetupNewTable> TableFactory(const std::string& name,
     return arrow::Status::Invalid("Failed to create Table Description", msg);
   }
 
-  // Return SetupNewTable object
-  SetupNewTable setup = SetupNewTable(name, user_td, Table::New);
-
-  // Apply any data manager info
   ARROW_ASSIGN_OR_RAISE(auto dminfo, ParseRecord(json_dminfo, "dminfo"));
-  setup.bindCreate(dminfo);
-
-  return setup;
+  return MakeSetupNewTable(name, user_td, dminfo);
 }
 
 }  // namespace arcae

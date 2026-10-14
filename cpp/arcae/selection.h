@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <initializer_list>
 #include <memory>
+#include <optional>
 #include <type_traits>
 #include <vector>
 
@@ -97,12 +98,21 @@ class Selection {
   // Return the Span referenced by the F-ORDERED index,
   // given the total number of dimensions
   arrow::Result<IndexSpan> FSpan(std::size_t fdim, std::size_t ndim) const noexcept {
+    if (auto span = MaybeFSpan(fdim, ndim)) return *span;
+    return arrow::Status::IndexError("Selection doesn't exist for dimension ", fdim);
+  }
+
+  // Return the Span referenced by the F-ORDERED index,
+  // given the total number of dimensions, if the dimension is selected.
+  // Unlike FSpan, this doesn't construct an error for unselected dimensions,
+  // so it suits checking dimensions per row
+  std::optional<IndexSpan> MaybeFSpan(std::size_t fdim, std::size_t ndim) const noexcept {
     auto size = std::ptrdiff_t(Size());
     auto sdim = std::ptrdiff_t(fdim) - std::ptrdiff_t(ndim) + size;
     if (sdim >= 0 && sdim < size && !spans_->operator[](sdim).empty()) {
       return spans_->operator[](sdim);
     }
-    return arrow::Status::IndexError("Selection doesn't exist for dimension ", fdim);
+    return std::nullopt;
   }
 
  private:

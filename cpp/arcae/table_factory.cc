@@ -36,6 +36,7 @@ using ::arrow::Result;
 using ::arrow::Status;
 
 using ::casacore::JsonParser;
+using ::casacore::Record;
 using ::casacore::Table;
 using ::casacore::TableProxy;
 
@@ -81,8 +82,13 @@ void CoerceToUserLocking(casacore::Record& lock_record) {
 Result<std::shared_ptr<TableProxy>> OpenProxy(const std::string& filename, bool readonly,
                                               const std::string& json_lockoptions,
                                               const detail::CacheSizeSpec& cache_spec) {
+  Record lock_record;
   try {
-    auto lock_record = JsonParser::parse(json_lockoptions).toRecord();
+    lock_record = JsonParser::parse(json_lockoptions).toRecord();
+  } catch (const std::exception& error) {
+    return Status::Invalid("Unable to parse lockoptions: ", error.what());
+  }
+  try {
     CoerceToUserLocking(lock_record);
     auto proxy =
         std::make_shared<TableProxy>(filename, lock_record, Table::TableOption::Old);
@@ -281,12 +287,20 @@ Result<std::shared_ptr<NewTableProxy>> Taql(
   // Easy case
   if (tables.size() == 0) {
     return NewTableProxy::Make([taql = taql]() -> Result<std::shared_ptr<TableProxy>> {
-      return std::make_shared<TableProxy>(taql, std::vector<TableProxy>{});
+      try {
+        return std::make_shared<TableProxy>(taql, std::vector<TableProxy>{});
+      } catch (const casacore::AipsError& error) {
+        return Status::Invalid(error.what());
+      }
     });
   } else if (tables.size() == 1) {
     return tables[0]->Spawn(
         [taql = taql](const TableProxy& tp) -> Result<std::shared_ptr<TableProxy>> {
-          return std::make_shared<TableProxy>(taql, std::vector<TableProxy>{tp});
+          try {
+            return std::make_shared<TableProxy>(taql, std::vector<TableProxy>{tp});
+          } catch (const casacore::AipsError& error) {
+            return Status::Invalid(error.what());
+          }
         });
   }
 

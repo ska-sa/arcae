@@ -1,4 +1,4 @@
-"""Reads of variably shaped columns, checked against python-casacore.
+"""Reads and writes of variably shaped columns, checked against python-casacore.
 
 Covers StandardStMan and TiledShapeStMan columns,
 in plain tables and TaQL reference tables.
@@ -33,10 +33,7 @@ def cell(r, shape):
     return np.arange(np.prod(shape), dtype=np.float64).reshape(shape) + r * 100
 
 
-@pytest.fixture(scope="module", params=["StandardStMan", "TiledShapeStMan"])
-def variable_table(request, tmp_path_factory):
-    dm = request.param
-    path = str(tmp_path_factory.mktemp(dm) / "variable.table")
+def create_variable_table(path, dm):
     desc = ct.maketabdesc(
         [
             ct.makearrcoldesc(
@@ -56,6 +53,15 @@ def variable_table(request, tmp_path_factory):
         assert T.getdminfo("RAGGED")["TYPE"] == dm
 
     return path
+
+
+DATA_MANAGERS = ["StandardStMan", "TiledShapeStMan"]
+
+
+@pytest.fixture(scope="module", params=DATA_MANAGERS)
+def variable_table(request, tmp_path_factory):
+    path = str(tmp_path_factory.mktemp(request.param) / "variable.table")
+    return create_variable_table(path, request.param)
 
 
 @pytest.fixture(params=["plain", "taql"])
@@ -144,3 +150,92 @@ def test_missing_rows(tables):
     rows = np.flatnonzero(defined)
     expected = np.stack(expected_cells(C, "MISSING", rows))
     assert_array_equal(A.getcol("MISSING", index=(rows,)), expected)
+
+
+@pytest.fixture(params=DATA_MANAGERS)
+def writable_table(request, tmp_path):
+    """A variably shaped table for each test, as writes modify it"""
+    return create_variable_table(str(tmp_path / "variable.table"), request.param)
+
+
+def written_cells(path, column):
+    with ct.table(path, ack=False) as C:
+        return [C.getcell(column, r) for r in range(NROW)]
+
+
+@pytest.mark.parametrize("rows", [None, "strided", "unsorted"])
+def test_write_uniform(writable_table, rows):
+    expected = [cell(r, SMALL) for r in range(NROW)]
+    if rows is None:
+        index = None
+        rows = np.arange(NROW)
+    elif rows == "strided":
+        rows = np.arange(0, NROW, 2)
+        index = (rows,)
+    else:
+        rows = np.random.default_rng(42).permutation(NROW)
+        index = (rows,)
+
+    data = -cell(0, (len(rows),) + SMALL)
+    with arcae.table(writable_table, readonly=False) as A:
+        A.putcol("UNIFORM", data, index=index)
+
+    for r, d in zip(rows, data):
+        expected[r] = d
+    for a, e in zip(written_cells(writable_table, "UNIFORM"), expected):
+        assert_array_equal(a, e)
+
+
+def test_write_ragged_secondary_selection(writable_table):
+    """Writing the first and third elements of the first dimension
+    leaves the remainder of every ragged cell untouched"""
+    expected = [cell(r, row_shape(r)) for r in range(NROW)]
+    data = -cell(0, (NROW, 2, 2))
+    with arcae.table(writable_table, readonly=False) as A:
+        A.putcol("RAGGED", data, index=(None, np.array([0, 2])))
+
+    for e, d in zip(expected, data):
+        e[[0, 2], :] = d
+    actual = written_cells(writable_table, "RAGGED")
+    for r, (a, e) in enumerate(zip(actual, expected)):
+        assert a.shape == row_shape(r)
+        assert_array_equal(a, e)
+
+
+def test_write_exceeds_cell(writable_table):
+    """The larger data and selection fit some cells only,
+    so nothing is written"""
+    with arcae.table(writable_table, readonly=False) as A:
+        with pytest.raises(IndexError, match="exceeds cell shape"):
+            A.putcol("RAGGED", np.zeros((NROW,) + LARGE))
+        with pytest.raises(IndexError, match="exceeds the dimension size"):
+            A.putcol("RAGGED", np.zeros((NROW, 1, 2)), index=(None, np.array([5])))
+
+    actual = written_cells(writable_table, "RAGGED")
+    for r, a in enumerate(actual):
+        assert_array_equal(a, cell(r, row_shape(r)))
+
+
+def test_write_undefined_rows(writable_table):
+    """Writes define the shape of undefined cells"""
+    data = -cell(0, (NROW,) + SMALL)
+    with arcae.table(writable_table, readonly=False) as A:
+        A.putcol("MISSING", data)
+
+    with ct.table(writable_table, ack=False) as C:
+        assert all(C.iscelldefined("MISSING", r) for r in range(NROW))
+    for a, d in zip(written_cells(writable_table, "MISSING"), data):
+        assert_array_equal(a, d)
+
+
+def test_write_undefined_rows_secondary_selection(writable_table):
+    """Undefined cells are shaped to hold the largest selected index"""
+    rows = np.array(sorted(MISSING_ROWS))
+    data = -cell(0, (len(rows), 2, 2))
+    with arcae.table(writable_table, readonly=False) as A:
+        A.putcol("MISSING", data, index=(rows, np.array([0, 2])))
+
+    actual = written_cells(writable_table, "MISSING")
+    for r, d in zip(rows, data):
+        assert actual[r].shape == (3, 2)
+        assert_array_equal(actual[r][[0, 2], :], d)

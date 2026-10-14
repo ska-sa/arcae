@@ -469,6 +469,11 @@ cdef class Table:
             shape += (2,)
             np_array = np_array.view(np_array.real.dtype)
 
+        # casacore stores bools as bytes, which avoids
+        # converting to and from an arrow bitmap
+        if np_array.dtype.kind == "b":
+            np_array = np_array.view(np.uint8)
+
         # Convert to pyarrow array
         if np_array.dtype.kind in "iuf" and np_array.dtype.isnative:
             pa_array = pa.Array.from_buffers(

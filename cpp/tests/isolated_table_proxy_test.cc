@@ -302,4 +302,37 @@ TEST_F(IsolatedTableProxyTest, SpawnSharesInstanceStats) {
   EXPECT_EQ(stats[0].io_bytes, 8);
 }
 
+// Work dispatched from an isolation thread may run on that thread's instance,
+// as the task dispatching it is about to complete. Otherwise it is queued
+// behind tasks on other instances, while its own instance becomes idle
+TEST_F(IsolatedTableProxyTest, DispatchFromIsolationThread) {
+  ASSERT_OK_AND_ASSIGN(auto itp, IsolatedTableProxy::Make(
+                                     [name = table_name_]() {
+                                       return std::make_shared<TableProxy>(name, Record(),
+                                                                           Table::Old);
+                                     },
+                                     2));
+
+  // Occupy the first instance until released
+  auto release = arrow::Future<>::Make();
+  auto blocked = itp->RunAsync([release](TableProxy&) {
+    release.Wait();
+    return true;
+  });
+
+  // Runs on the second instance, and dispatches further work from there
+  auto dispatched = std::make_shared<arrow::Future<bool>>();
+  ASSERT_OK(itp->RunSync([&itp, dispatched](TableProxy&) {
+    *dispatched = itp->RunAsync([](TableProxy&) { return true; });
+    return true;
+  }));
+
+  // The dispatched work completes while the first instance is still occupied
+  EXPECT_TRUE(dispatched->Wait(kTeardownTimeout))
+      << "Work dispatched from an isolation thread was queued on a busy instance";
+  release.MarkFinished();
+  ASSERT_OK(blocked.MoveResult());
+  ASSERT_OK(dispatched->MoveResult());
+}
+
 }  // namespace

@@ -89,7 +89,11 @@ std::size_t IsolatedTableProxy::GetInstance() const {
 
   for (std::size_t i = 0; i < proxy_pools_.size(); ++i) {
     const auto& pool = proxy_pools_[i].io_pool_;
-    const auto pool_tasks = pool->GetNumTasks();
+    auto pool_tasks = pool->GetNumTasks();
+    // Continuations dispatching further work, such as the reads following a
+    // partition, run on the isolation thread that completed the previous task.
+    // That task still counts as running, but its instance is about to be free
+    if (pool_tasks > 0 && pool->OwnsThisThread()) --pool_tasks;
     if (pool_tasks < num_tasks) {
       instance = i;
       num_tasks = pool_tasks;

@@ -392,4 +392,33 @@ TEST_F(IsolatedTableProxyTest, PlaceByOutstandingCost) {
   for (auto& f : pair) ASSERT_OK(f.MoveResult());
 }
 
+// Close() closes each instance's table on its isolation thread. Tasks
+// dispatched while it waits for that are queued behind the close, and must
+// fail rather than run against the closed table, which casacore doesn't
+// guard against
+TEST_F(IsolatedTableProxyTest, DispatchDuringClose) {
+  ASSERT_OK_AND_ASSIGN(auto itp, OpenTable());
+
+  // Hold the isolation thread, so that the close is queued behind this task
+  auto release = arrow::Future<>::Make();
+  auto blocked = itp->RunAsync([release](TableProxy&) {
+    release.Wait();
+    return true;
+  });
+
+  auto closing = std::thread([&itp]() { ASSERT_OK(itp->Close()); });
+  // Give Close() time to queue the close behind the blocked task
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  ASSERT_FALSE(itp->IsClosed());
+
+  // Dispatched before Close() returns, so queued behind the close
+  auto late = itp->RunAsync([](TableProxy& tp) { return tp.table().nrow(); });
+
+  release.MarkFinished();
+  closing.join();
+  ASSERT_OK(blocked.MoveResult());
+  EXPECT_RAISES_WITH_MESSAGE_THAT(Invalid, ::testing::HasSubstr("closed"),
+                                  late.MoveResult());
+}
+
 }  // namespace

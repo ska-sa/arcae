@@ -97,8 +97,7 @@ class IsolatedTableProxy : public std::enable_shared_from_this<IsolatedTableProx
     return RunInPool(submission.instance,
                      [this, submission = submission,
                       functor = std::forward<Fn>(functor)]() mutable -> ResultType {
-                       return Invoke<ResultType>(submission, functor,
-                                                 *this->GetProxy(submission.instance));
+                       return InvokeOnInstance<ResultType>(submission, functor);
                      });
   }
 
@@ -116,8 +115,7 @@ class IsolatedTableProxy : public std::enable_shared_from_this<IsolatedTableProx
     return RunInPool(submission.instance,
                      [this, submission = submission,
                       functor = std::forward<Fn>(functor)]() mutable -> ResultType {
-                       return Invoke<ResultType>(submission, functor,
-                                                 *this->GetProxy(submission.instance));
+                       return InvokeOnInstance<ResultType>(submission, functor);
                      });
   }
 
@@ -136,8 +134,7 @@ class IsolatedTableProxy : public std::enable_shared_from_this<IsolatedTableProx
     return RunInPoolSync(submission.instance,
                          [this, submission = submission,
                           functor = std::forward<Fn>(functor)]() mutable -> ResultType {
-                           return Invoke<ResultType>(
-                               submission, functor, *this->GetProxy(submission.instance));
+                           return InvokeOnInstance<ResultType>(submission, functor);
                          });
   }
 
@@ -156,8 +153,7 @@ class IsolatedTableProxy : public std::enable_shared_from_this<IsolatedTableProx
     return RunInPoolSync(submission.instance,
                          [this, submission = submission,
                           functor = std::forward<Fn>(functor)]() mutable -> ResultType {
-                           return Invoke<ResultType>(
-                               submission, functor, *this->GetProxy(submission.instance));
+                           return InvokeOnInstance<ResultType>(submission, functor);
                          });
   }
 
@@ -283,6 +279,20 @@ class IsolatedTableProxy : public std::enable_shared_from_this<IsolatedTableProx
     std::chrono::steady_clock::time_point start_;
   };
 
+  // Invoke the functor on the submitted instance's table within a TaskScope.
+  // Tasks dispatched while Close() waits are queued behind the close, so fail
+  // them if the table has been closed: casacore answers some queries on a
+  // closed table instead of failing them, e.g. reporting zero rows.
+  // This runs on the isolation thread that closes the table, so can't race it
+  template <typename ResultType, typename Fn>
+  ResultType InvokeOnInstance(const Submission& submission, Fn& functor) const {
+    auto checked = [&functor](casacore::TableProxy& tp) -> ResultType {
+      if (tp.table().isNull()) return arrow::Status::Invalid("TableProxy is closed");
+      return std::invoke(functor, tp);
+    };
+    return Invoke<ResultType>(submission, checked, *GetProxy(submission.instance));
+  }
+
   // Invoke the functor within a TaskScope,
   // converting exceptions into a failed status
   template <typename ResultType, typename Fn, typename... Args>
@@ -338,7 +348,8 @@ class IsolatedTableProxy : public std::enable_shared_from_this<IsolatedTableProx
   };
 
   std::vector<ProxyAndPool> proxy_pools_;
-  bool is_closed_;
+  // Read by dispatching threads while Close() runs
+  std::atomic<bool> is_closed_;
   std::vector<std::shared_ptr<IsolatedTableProxy>> dependencies_;
 };
 

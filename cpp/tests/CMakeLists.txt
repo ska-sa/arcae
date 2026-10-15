@@ -34,10 +34,6 @@ add_executable(selection_test selection_test.cc)
 target_link_libraries(selection_test PRIVATE GTest::gtest_main arcae test_utils)
 add_test(selection_test selection_test)
 
-add_executable(dev_transpose_test dev_transpose_test.cc)
-target_link_libraries(dev_transpose_test PRIVATE GTest::gtest_main arcae absl::time absl::str_format test_utils)
-add_test(dev_transpose_test dev_transpose_test)
-
 add_executable(new_table_proxy_test new_table_proxy_test.cc)
 target_link_libraries(new_table_proxy_test PRIVATE GTest::gtest_main arcae test_utils)
 add_test(new_table_proxy_test new_table_proxy_test)
@@ -57,7 +53,6 @@ add_test(json_parser_test json_parser_test)
 set_tests_properties(result_shape_test
                      cache_size_test
                      data_partition_test
-                     dev_transpose_test
                      isolated_table_proxy_test
                      json_parser_test
                      new_table_proxy_test

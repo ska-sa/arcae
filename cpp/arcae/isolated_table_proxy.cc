@@ -1,7 +1,10 @@
 #include "arcae/isolated_table_proxy.h"
 
+#include <atomic>
 #include <cassert>
+#include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <memory>
 
@@ -21,6 +24,60 @@ using ::casacore::TableProxy;
 
 namespace arcae {
 namespace detail {
+
+namespace {
+
+using Clock = std::chrono::steady_clock;
+
+// Statistics of the instance whose task is running on this thread
+thread_local InstanceStats* current_stats = nullptr;
+
+std::int64_t ElapsedNs(Clock::time_point start, Clock::time_point end) {
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
+}
+
+}  // namespace
+
+void RecordIoBytes(std::int64_t nbytes) {
+  if (current_stats) current_stats->io_bytes.fetch_add(nbytes, std::memory_order_relaxed);
+}
+
+IsolatedTableProxy::Submission IsolatedTableProxy::RecordSubmission(
+    std::size_t instance) const {
+  assert(instance < proxy_pools_.size());
+  auto* stats = proxy_pools_[instance].stats_.get();
+  stats->submitted.fetch_add(1, std::memory_order_relaxed);
+  return Submission{stats, Clock::now()};
+}
+
+IsolatedTableProxy::TaskScope::TaskScope(const Submission& submission)
+    : stats_(submission.stats), previous_(current_stats) {
+  if (!stats_) return;
+  start_ = Clock::now();
+  stats_->wait_ns.fetch_add(ElapsedNs(submission.time, start_),
+                            std::memory_order_relaxed);
+  current_stats = stats_;
+}
+
+IsolatedTableProxy::TaskScope::~TaskScope() {
+  if (!stats_) return;
+  current_stats = previous_;
+  stats_->busy_ns.fetch_add(ElapsedNs(start_, Clock::now()), std::memory_order_relaxed);
+  stats_->completed.fetch_add(1, std::memory_order_relaxed);
+}
+
+std::vector<InstanceStatsSnapshot> IsolatedTableProxy::GetInstanceStats() const {
+  std::vector<InstanceStatsSnapshot> result;
+  result.reserve(proxy_pools_.size());
+  for (const auto& [proxy, pool, stats] : proxy_pools_) {
+    constexpr auto relaxed = std::memory_order_relaxed;
+    result.push_back(InstanceStatsSnapshot{
+        stats->submitted.load(relaxed), stats->completed.load(relaxed),
+        stats->wait_ns.load(relaxed), stats->busy_ns.load(relaxed),
+        stats->io_bytes.load(relaxed)});
+  }
+  return result;
+}
 
 bool IsolatedTableProxy::IsClosed() const { return is_closed_; }
 
@@ -55,7 +112,7 @@ const std::shared_ptr<ThreadPool>& IsolatedTableProxy::GetPool(
 }
 
 bool IsolatedTableProxy::OwnsThisThread() const {
-  for (const auto& [proxy, pool] : proxy_pools_) {
+  for (const auto& [proxy, pool, stats] : proxy_pools_) {
     if (pool->OwnsThisThread()) return true;
   }
   return false;
@@ -90,7 +147,7 @@ Result<bool> IsolatedTableProxy::Close() {
     std::vector<Future<bool>> results;
     results.reserve(proxy_pools_.size());
     Status inline_status = Status::OK();
-    for (auto& [proxy, pool] : proxy_pools_) {
+    for (auto& [proxy, pool, stats] : proxy_pools_) {
       // Submitting to a pool that owns the calling thread and then waiting on
       // the result deadlocks: the only worker able to run the close task is the
       // thread doing the waiting. This happens whenever the last reference to

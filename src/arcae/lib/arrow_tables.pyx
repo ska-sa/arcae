@@ -33,6 +33,7 @@ from pyarrow.lib import (tobytes, frombytes)
 from arcae.lib.arrow_tables cimport (
     CCasaTable,
     CConfiguration,
+    CInstanceStats,
     CMSDescriptor,
     CServiceLocator,
     COpenTable,
@@ -547,6 +548,19 @@ cdef class Table:
             lock_opts = GetResultValue(self.c_table.get().GetLockOptions())
 
         return json.loads(lock_opts)
+
+    def _instance_stats(self) -> List[Dict[str, int]]:
+        """Cumulative scheduling statistics of each table instance.
+
+        Intended for benchmarking: subtract two snapshots to measure
+        the work done between them. Times are in nanoseconds.
+        """
+        cdef vector[CInstanceStats] stats
+
+        with nogil:
+            stats = self.c_table.get().GetInstanceStats()
+
+        return stats
 
     def nrow(self) -> int:
         with nogil:

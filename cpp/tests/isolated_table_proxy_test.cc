@@ -23,6 +23,7 @@
 
 using ::arcae::GetArrayColumn;
 using ::arcae::detail::IsolatedTableProxy;
+using ::arcae::detail::RecordIoBytes;
 
 using casacore::Array;
 using casacore::ArrayColumnDesc;
@@ -245,6 +246,60 @@ TEST_F(IsolatedTableProxyTest, SpawnCatchesExceptions) {
   ASSERT_OK_AND_ASSIGN(
       auto nrow, itp->RunSync([](const TableProxy& tp) { return tp.table().nrow(); }));
   EXPECT_EQ(nrow, knrow);
+}
+
+// Each instance counts the tasks dispatched to it,
+// the time they spend queued and running, and the I/O they record
+TEST_F(IsolatedTableProxyTest, InstanceStats) {
+  ASSERT_OK_AND_ASSIGN(auto itp, OpenTable());
+  auto stats = itp->GetInstanceStats();
+  ASSERT_EQ(stats.size(), 1);
+  EXPECT_EQ(stats[0].submitted, 0);
+  EXPECT_EQ(stats[0].completed, 0);
+
+  // I/O recorded outside of a task is not attributed to any instance
+  RecordIoBytes(1000);
+
+  ASSERT_OK(itp->RunSync([](TableProxy&) {
+    RecordIoBytes(16);
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    return true;
+  }));
+  ASSERT_OK(itp->RunAsync([](TableProxy&) {
+                 RecordIoBytes(32);
+                 return true;
+               })
+                .MoveResult());
+
+  // Tasks that throw are still measured
+  ASSERT_NOT_OK(itp->RunSync(
+      [](TableProxy&) -> bool { throw casacore::AipsError("measured failure"); }));
+
+  stats = itp->GetInstanceStats();
+  EXPECT_EQ(stats[0].submitted, 3);
+  EXPECT_EQ(stats[0].completed, 3);
+  EXPECT_EQ(stats[0].io_bytes, 48);
+  EXPECT_GE(stats[0].busy_ns, 5'000'000);
+  EXPECT_GE(stats[0].wait_ns, 0);
+}
+
+// Proxies spawned from a parent run on the parent's pools,
+// so they count against the parent's statistics
+TEST_F(IsolatedTableProxyTest, SpawnSharesInstanceStats) {
+  ASSERT_OK_AND_ASSIGN(auto itp, OpenTable());
+  ASSERT_OK_AND_ASSIGN(auto spawned, itp->Spawn([](const TableProxy& tp) {
+    return std::make_shared<TableProxy>(tp);
+  }));
+
+  ASSERT_OK(spawned->RunSync([](TableProxy&) {
+    RecordIoBytes(8);
+    return true;
+  }));
+
+  auto stats = itp->GetInstanceStats();
+  ASSERT_EQ(stats.size(), 1);
+  EXPECT_EQ(stats[0].completed, 1);
+  EXPECT_EQ(stats[0].io_bytes, 8);
 }
 
 }  // namespace

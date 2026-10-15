@@ -152,6 +152,7 @@ Status WriteChunks(const TableProxy& tp, const std::string& column_name,
       } else {
         WriteChunkArray<CT>(tp, column_name, chunk, GatherChunkArray<CT>(chunk, buffer));
       }
+      RecordIoBytes(chunk.nElements() * sizeof(CT));
     }
     return Status::OK();
   });

@@ -3,6 +3,7 @@
 
 #include <memory>
 #include <type_traits>
+#include <vector>
 
 #include <arrow/result.h>
 #include <arrow/util/thread_pool.h>
@@ -107,6 +108,11 @@ class NewTableProxy {
   // Add a column to the table
   arrow::Result<bool> AddColumns(const std::string& json_columndescs,
                                  const std::string& json_dminfo = {});
+  // Get a snapshot of each instance's scheduling statistics
+  std::vector<detail::InstanceStatsSnapshot> GetInstanceStats() const {
+    return itp_->GetInstanceStats();
+  }
+
   // Get a pointer to the IsolatedTableProxy
   std::shared_ptr<detail::IsolatedTableProxy> Proxy() const { return itp_; }
 

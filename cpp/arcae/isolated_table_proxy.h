@@ -1,6 +1,9 @@
 #ifndef ARCAE_ISOLATED_TABLE_PROXY_H
 #define ARCAE_ISOLATED_TABLE_PROXY_H
 
+#include <atomic>
+#include <chrono>
+#include <cstdint>
 #include <exception>
 #include <memory>
 #include <type_traits>
@@ -19,6 +22,37 @@
 
 namespace arcae {
 namespace detail {
+
+// Cumulative scheduling statistics for one instance.
+// Shared by every IsolatedTableProxy dispatching to the instance's pool,
+// so that proxies spawned from a parent count against the same pool
+// Submitting threads and the isolation thread update separate
+// cache lines, so that recording statistics doesn't bounce lines between them
+struct InstanceStats {
+  // Updated by submitting threads
+  alignas(64) std::atomic<std::int64_t> submitted{0};
+  // Updated by the isolation thread
+  alignas(64) std::atomic<std::int64_t> completed{0};
+  // Time from submission until a task starts running
+  std::atomic<std::int64_t> wait_ns{0};
+  // Time spent running tasks
+  std::atomic<std::int64_t> busy_ns{0};
+  // Bytes read from or written to the table
+  std::atomic<std::int64_t> io_bytes{0};
+};
+
+// Point in time copy of InstanceStats
+struct InstanceStatsSnapshot {
+  std::int64_t submitted;
+  std::int64_t completed;
+  std::int64_t wait_ns;
+  std::int64_t busy_ns;
+  std::int64_t io_bytes;
+};
+
+// Attribute nbytes of I/O to the instance running the calling task.
+// Does nothing outside of a task dispatched by an IsolatedTableProxy
+void RecordIoBytes(std::int64_t nbytes);
 
 // Isolates access to a CASA Table to a single thread
 class IsolatedTableProxy : public std::enable_shared_from_this<IsolatedTableProxy> {
@@ -44,15 +78,9 @@ class IsolatedTableProxy : public std::enable_shared_from_this<IsolatedTableProx
     using ResultType = ArrowResultType<Fn, const casacore::TableProxy&>;
     ARROW_RETURN_NOT_OK(CheckClosed());
     auto instance = GetInstance();
-    return RunInPool([this, instance = instance,
+    return RunInPool([this, instance = instance, submission = RecordSubmission(instance),
                       functor = std::forward<Fn>(functor)]() mutable -> ResultType {
-      try {
-        return std::invoke(functor, *this->GetProxy(instance));
-      } catch (casacore::AipsError& e) {
-        return arrow::Status::Invalid("Unhandled casacore exception: ", e.what());
-      } catch (std::exception& e) {
-        return arrow::Status::Invalid("Unhandled exception: ", e.what());
-      }
+      return Invoke<ResultType>(submission, functor, *this->GetProxy(instance));
     });
   }
 
@@ -66,16 +94,10 @@ class IsolatedTableProxy : public std::enable_shared_from_this<IsolatedTableProx
     ARROW_RETURN_NOT_OK(CheckClosed());
     auto instance = GetInstance();
     return RunInPool(instance,
-                     [this, instance = instance,
+                     [this, instance = instance, submission = RecordSubmission(instance),
                       functor = std::forward<Fn>(functor)]() mutable -> ResultType {
-                       try {
-                         return std::invoke(functor, *this->GetProxy(instance));
-                       } catch (casacore::AipsError& e) {
-                         return arrow::Status::Invalid("Unhandled casacore exception: ",
-                                                       e.what());
-                       } catch (std::exception& e) {
-                         return arrow::Status::Invalid("Unhandled exception: ", e.what());
-                       }
+                       return Invoke<ResultType>(submission, functor,
+                                                 *this->GetProxy(instance));
                      });
   }
 
@@ -90,13 +112,10 @@ class IsolatedTableProxy : public std::enable_shared_from_this<IsolatedTableProx
     return future.Then(
         [this, instance = instance,
          fn = std::forward<Fn>(functor)](const R& result) mutable -> ResultType {
-          try {
-            return std::invoke(fn, result, *this->GetProxy(instance));
-          } catch (casacore::AipsError& e) {
-            return arrow::Status::Invalid("Unhandled casacore exception: ", e.what());
-          } catch (std::exception& e) {
-            return arrow::Status::Invalid("Unhandled exception: ", e.what());
-          }
+          // The continuation is only queued once the future completes,
+          // so its queue wait can't be observed: record it as submitted now
+          return Invoke<ResultType>(RecordSubmission(instance), fn, result,
+                                    *this->GetProxy(instance));
         },
         {},
         arrow::CallbackOptions{arrow::ShouldSchedule::Always,
@@ -114,13 +133,10 @@ class IsolatedTableProxy : public std::enable_shared_from_this<IsolatedTableProx
     return future.Then(
         [this, instance = instance,
          fn = std::forward<Fn>(functor)](const R& result) mutable -> ResultType {
-          try {
-            return std::invoke(fn, result, *this->GetProxy(instance));
-          } catch (casacore::AipsError& e) {
-            return arrow::Status::Invalid("Unhandled casacore exception: ", e.what());
-          } catch (std::exception& e) {
-            return arrow::Status::Invalid("Unhandled exception: ", e.what());
-          }
+          // The continuation is only queued once the future completes,
+          // so its queue wait can't be observed: record it as submitted now
+          return Invoke<ResultType>(RecordSubmission(instance), fn, result,
+                                    *this->GetProxy(instance));
         },
         {},
         arrow::CallbackOptions{arrow::ShouldSchedule::Always,
@@ -138,14 +154,9 @@ class IsolatedTableProxy : public std::enable_shared_from_this<IsolatedTableProx
     ARROW_RETURN_NOT_OK(CheckClosed());
     auto instance = GetInstance();
     return RunInPoolSync([this, instance = instance,
+                          submission = RecordSubmission(instance),
                           functor = std::forward<Fn>(functor)]() mutable -> ResultType {
-      try {
-        return std::invoke(functor, *this->GetProxy(instance));
-      } catch (casacore::AipsError& e) {
-        return arrow::Status::Invalid("Unhandled casacore exception: ", e.what());
-      } catch (std::exception& e) {
-        return arrow::Status::Invalid("Unhandled exception: ", e.what());
-      }
+      return Invoke<ResultType>(submission, functor, *this->GetProxy(instance));
     });
   }
 
@@ -161,15 +172,9 @@ class IsolatedTableProxy : public std::enable_shared_from_this<IsolatedTableProx
     auto instance = GetInstance();
     return RunInPoolSync(
         instance,
-        [this, instance = instance,
+        [this, instance = instance, submission = RecordSubmission(instance),
          functor = std::forward<Fn>(functor)]() mutable -> ResultType {
-          try {
-            return std::invoke(functor, *this->GetProxy(instance));
-          } catch (casacore::AipsError& e) {
-            return arrow::Status::Invalid("Unhandled casacore exception: ", e.what());
-          } catch (std::exception& e) {
-            return arrow::Status::Invalid("Unhandled exception: ", e.what());
-          }
+          return Invoke<ResultType>(submission, functor, *this->GetProxy(instance));
         });
   }
 
@@ -199,17 +204,11 @@ class IsolatedTableProxy : public std::enable_shared_from_this<IsolatedTableProx
       ARROW_ASSIGN_OR_RAISE(auto io_pool, ::arrow::internal::ThreadPool::Make(1));
       auto table_fut =
           arrow::DeferNotOk(io_pool->Submit([fn = fwd_functor]() mutable -> ResultType {
-            try {
-              return std::invoke(fn);
-            } catch (casacore::AipsError& e) {
-              return arrow::Status::Invalid("Unhandled casacore exception: ", e.what());
-            } catch (std::exception& e) {
-              return arrow::Status::Invalid("Unhandled exception: ", e.what());
-            }
+            return Invoke<ResultType>(Submission{}, fn);
           }));
       ARROW_ASSIGN_OR_RAISE(auto table_proxy, table_fut.MoveResult());
-      proxy->proxy_pools_.push_back(
-          ProxyAndPool{std::move(table_proxy), std::move(io_pool)});
+      proxy->proxy_pools_.push_back(ProxyAndPool{
+          std::move(table_proxy), std::move(io_pool), std::make_shared<InstanceStats>()});
     }
 
     proxy->is_closed_ = false;
@@ -237,17 +236,13 @@ class IsolatedTableProxy : public std::enable_shared_from_this<IsolatedTableProx
     for (std::size_t i = 0; i < proxy_pools_.size(); ++i) {
       auto future = arrow::DeferNotOk(
           GetPool(i)->Submit([this, i = i, fn = fwd_functor]() -> ResultType {
-            try {
-              return std::invoke(fn, *GetProxy(i));
-            } catch (casacore::AipsError& e) {
-              return arrow::Status::Invalid("Unhandled casacore exception: ", e.what());
-            } catch (std::exception& e) {
-              return arrow::Status::Invalid("Unhandled exception: ", e.what());
-            }
+            return Invoke<ResultType>(Submission{}, fn, *GetProxy(i));
           }));
 
       ARROW_ASSIGN_OR_RAISE(auto table_proxy, future.MoveResult());
-      itp->proxy_pools_.emplace_back(ProxyAndPool{std::move(table_proxy), GetPool(i)});
+      // Share the parent's statistics, as the spawned proxy runs on the same pool
+      itp->proxy_pools_.emplace_back(
+          ProxyAndPool{std::move(table_proxy), GetPool(i), proxy_pools_[i].stats_});
     }
 
     itp->is_closed_ = false;
@@ -260,6 +255,9 @@ class IsolatedTableProxy : public std::enable_shared_from_this<IsolatedTableProx
 
   std::size_t nInstances() const { return proxy_pools_.size(); }
 
+  // Return a snapshot of each instance's scheduling statistics
+  std::vector<InstanceStatsSnapshot> GetInstanceStats() const;
+
  protected:
   IsolatedTableProxy() = default;
   IsolatedTableProxy(const IsolatedTableProxy& rhs) = delete;
@@ -269,6 +267,45 @@ class IsolatedTableProxy : public std::enable_shared_from_this<IsolatedTableProx
 
   // Gets the least active instance
   std::size_t GetInstance() const;
+
+  // A task submitted to an instance.
+  // stats is null for tasks that are not measured
+  struct Submission {
+    InstanceStats* stats = nullptr;
+    std::chrono::steady_clock::time_point time;
+  };
+
+  // Record that a task is being submitted to the given instance
+  Submission RecordSubmission(std::size_t instance) const;
+
+  // Measures a task while it runs on an isolation thread,
+  // attributing any I/O it records to the task's instance
+  class TaskScope {
+   public:
+    explicit TaskScope(const Submission& submission);
+    ~TaskScope();
+    TaskScope(const TaskScope&) = delete;
+    TaskScope& operator=(const TaskScope&) = delete;
+
+   private:
+    InstanceStats* stats_;
+    InstanceStats* previous_;
+    std::chrono::steady_clock::time_point start_;
+  };
+
+  // Invoke the functor within a TaskScope,
+  // converting exceptions into a failed status
+  template <typename ResultType, typename Fn, typename... Args>
+  static ResultType Invoke(const Submission& submission, Fn& functor, Args&&... args) {
+    TaskScope scope(submission);
+    try {
+      return std::invoke(functor, std::forward<Args>(args)...);
+    } catch (casacore::AipsError& e) {
+      return arrow::Status::Invalid("Unhandled casacore exception: ", e.what());
+    } catch (std::exception& e) {
+      return arrow::Status::Invalid("Unhandled exception: ", e.what());
+    }
+  }
 
   // Get the Table Proxy for the given instance
   const std::shared_ptr<casacore::TableProxy>& GetProxy(std::size_t instance) const;
@@ -314,6 +351,7 @@ class IsolatedTableProxy : public std::enable_shared_from_this<IsolatedTableProx
   struct ProxyAndPool {
     std::shared_ptr<casacore::TableProxy> table_proxy_;
     std::shared_ptr<arrow::internal::ThreadPool> io_pool_;
+    std::shared_ptr<InstanceStats> stats_;
   };
 
   std::vector<ProxyAndPool> proxy_pools_;

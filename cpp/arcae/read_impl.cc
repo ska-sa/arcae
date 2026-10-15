@@ -171,6 +171,7 @@ Status ReadChunks(const TableProxy& tp, const std::string& column_name,
       } else {
         CopyChunkArray<CT>(chunk, ReadChunkArray<CT>(tp, column_name, chunk), buffer);
       }
+      RecordIoBytes(chunk.nElements() * sizeof(CT));
     }
     return Status::OK();
   });

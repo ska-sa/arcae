@@ -4,6 +4,7 @@ History
 
 X.Y.Z (DD-MM-YYYY)
 ------------------
+* Remove the dev transpose test (:pr:`259`)
 * Write each column in one task, more than halving the overhead of small
   writes (:pr:`255`)
 * Reduce the cost of checking writes to variably shaped columns (:pr:`255`)

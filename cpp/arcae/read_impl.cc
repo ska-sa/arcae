@@ -380,8 +380,10 @@ Future<std::shared_ptr<Array>> ReadImpl(const std::shared_ptr<IsolatedTableProxy
 
   auto fan_out = itp->nInstances() > 1;
   // Split the rows of large reads so that they can be spread over the instances.
-  // Splits are large enough that the extra hand-offs are negligible
-  constexpr std::size_t kMinSplitBytes = 1024 * 1024;
+  // Callers issuing many concurrent requests already keep the instances busy,
+  // and splitting their requests only adds hand-offs: requests of a few MB
+  // read up to a quarter slower when split into pieces of about 1 MB
+  constexpr std::size_t kMinSplitBytes = 8 * 1024 * 1024;
   auto row_split = RowSplitOptions{itp->nInstances(), kMinSplitBytes};
 
   auto part_fut =

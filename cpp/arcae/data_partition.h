@@ -206,7 +206,8 @@ struct DataChunk {
 struct RowSplitOptions {
   // Split the rows into at most this many chunks
   std::size_t max_splits = 1;
-  // Don't split the rows into chunks smaller than this many bytes
+  // Don't split the rows into chunks smaller than this many bytes.
+  // Rows are split into equally sized chunks
   std::size_t min_bytes = 0;
 };
 

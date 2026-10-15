@@ -146,7 +146,8 @@ TEST(DataPartitionTest, Variable) {
 // Each row of a {2, 3} complex cell is 2 x 3 x 8 = 48 bytes
 static constexpr std::size_t kRowBytes = 2 * 3 * 8;
 
-// Rows are split into at most max_splits chunks, each of consecutive rows
+// Rows are split into at most max_splits chunks of consecutive rows,
+// whose sizes differ by at most one row
 TEST(DataPartitionTest, SplitRows) {
   auto result_shape =
       ResultShapeData{"DATA", IPosition{2, 3, 10}, 3, DataType::TpComplex, std::nullopt};
@@ -155,10 +156,10 @@ TEST(DataPartitionTest, SplitRows) {
   ASSERT_OK_AND_ASSIGN(auto partition,
                        DataPartition::Make(selection, result_shape, RowSplitOptions{4}));
   ASSERT_EQ(partition.nChunks(), 4);
-  EXPECT_THAT(partition.Chunk(0).Disk(2), ::testing::ElementsAre(0, 1, 2));
-  EXPECT_THAT(partition.Chunk(1).Disk(2), ::testing::ElementsAre(3, 4, 5));
-  EXPECT_THAT(partition.Chunk(2).Disk(2), ::testing::ElementsAre(6, 7, 8));
-  EXPECT_THAT(partition.Chunk(3).Disk(2), ::testing::ElementsAre(9));
+  EXPECT_THAT(partition.Chunk(0).Disk(2), ::testing::ElementsAre(0, 1));
+  EXPECT_THAT(partition.Chunk(1).Disk(2), ::testing::ElementsAre(2, 3, 4));
+  EXPECT_THAT(partition.Chunk(2).Disk(2), ::testing::ElementsAre(5, 6));
+  EXPECT_THAT(partition.Chunk(3).Disk(2), ::testing::ElementsAre(7, 8, 9));
   EXPECT_EQ(partition.nElements(), 2 * 3 * 10);
 
   for (std::size_t c = 0; c < partition.nChunks(); ++c) {
@@ -183,7 +184,18 @@ TEST(DataPartitionTest, SplitRowsMinimumBytes) {
   EXPECT_THAT(partition.Chunk(0).Disk(2), ::testing::ElementsAre(0, 1, 2, 3, 4));
   EXPECT_THAT(partition.Chunk(1).Disk(2), ::testing::ElementsAre(5, 6, 7, 8, 9));
 
-  // A read smaller than the minimum is not split
+  // A read just over twice the minimum is split into two equal chunks,
+  // rather than two of the minimum and a smaller remainder
+  ASSERT_OK_AND_ASSIGN(partition, DataPartition::Make(selection, result_shape,
+                                                      RowSplitOptions{4, 4 * kRowBytes}));
+  ASSERT_EQ(partition.nChunks(), 2);
+  EXPECT_THAT(partition.Chunk(0).Disk(2), ::testing::ElementsAre(0, 1, 2, 3, 4));
+  EXPECT_THAT(partition.Chunk(1).Disk(2), ::testing::ElementsAre(5, 6, 7, 8, 9));
+
+  // A read less than twice the minimum is not split
+  ASSERT_OK_AND_ASSIGN(partition, DataPartition::Make(selection, result_shape,
+                                                      RowSplitOptions{4, 6 * kRowBytes}));
+  EXPECT_EQ(partition.nChunks(), 1);
   ASSERT_OK_AND_ASSIGN(
       partition,
       DataPartition::Make(selection, result_shape, RowSplitOptions{4, 100 * kRowBytes}));

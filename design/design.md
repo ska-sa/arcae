@@ -144,7 +144,10 @@ instance, the partitioning task reads the chunks itself, avoiding a hand-off.
 The row dimension of a fixed-shape selection is a single `casacore::RefRows`,
 gaps included, so it would otherwise always form one chunk.
 `DataPartition::Make` therefore takes `RowSplitOptions`, splitting the selected
-rows into at most one piece per instance, each at least 1 MiB. Missing
+rows into at most one piece per instance, of equal size and each at least
+8 MiB. Smaller requests are read whole: callers issuing many concurrent requests
+already keep the instances busy, and splitting their requests only adds
+hand-offs between threads. Missing
 (negative) rows stay in chunks of their own. Variably-shaped columns already
 form one chunk per row. `GroupChunks` then groups the chunks into one group per
 instance, with similar numbers of elements.

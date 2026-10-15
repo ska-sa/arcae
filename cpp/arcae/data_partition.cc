@@ -120,20 +120,29 @@ Result<std::vector<SpanPair>> MakeSubSpans(const IndexSpan& disk_span,
   return result;
 }
 
-// Split spans of rows that are read from disk into consecutive pieces of at
-// most rows_per_split rows. Spans of missing (negative) rows are not split
-std::vector<SpanPair> SplitRowSpans(std::vector<SpanPair>&& spans,
-                                    std::size_t rows_per_split) {
-  assert(rows_per_split > 0);
+// Split the nrows rows read from disk, over all spans, into nsplits pieces
+// of consecutive rows, whose sizes differ by at most one row. Spans of
+// missing (negative) rows are not split. A piece spanning two spans is split
+// at their boundary, as the spans are separate chunks anyway
+std::vector<SpanPair> SplitRowSpans(std::vector<SpanPair>&& spans, std::size_t nrows,
+                                    std::size_t nsplits) {
+  assert(nsplits > 0 && nsplits <= nrows);
   std::vector<SpanPair> result;
+  // Rows read from disk before the current span, and the current split
+  std::size_t position = 0;
+  std::size_t split = 1;
   for (auto& [disk, mem] : spans) {
-    if (disk.size() <= rows_per_split || disk[0] < 0) {
+    if (disk.size() == 0 || disk[0] < 0) {
       result.push_back({std::move(disk), std::move(mem)});
       continue;
     }
-    for (std::size_t start = 0; start < disk.size(); start += rows_per_split) {
-      result.push_back(
-          {disk.subspan(start, rows_per_split), mem.subspan(start, rows_per_split)});
+    for (std::size_t start = 0; start < disk.size();) {
+      auto split_end = split * nrows / nsplits;
+      auto n = std::min(disk.size() - start, split_end - position);
+      result.push_back({disk.subspan(start, n), mem.subspan(start, n)});
+      start += n;
+      position += n;
+      if (position == split_end) ++split;
     }
   }
   return result;
@@ -490,8 +499,9 @@ Result<DataPartition> DataPartition::Make(const Selection& selection,
       dim_subspans.emplace_back(std::move(spans));
     }
 
-    // Split the rows into pieces of roughly equal size,
-    // none of which are smaller than the minimum
+    // Split the rows into as many pieces of equal size as the minimum allows,
+    // up to the maximum. Splitting into pieces of the minimum size and a
+    // remainder would split reads barely larger than the minimum
     if (row_split.max_splits > 1) {
       ARROW_ASSIGN_OR_RAISE(auto dtype_size,
                             CasaDataTypeSize(result_shape.GetDataType()));
@@ -505,12 +515,15 @@ Result<DataPartition> DataPartition::Make(const Selection& selection,
       for (const auto& span : dim_subspans[row_dim]) {
         if (span.disk.size() > 0 && span.disk[0] >= 0) nrows += span.disk.size();
       }
-      auto min_rows = std::max<std::size_t>(
-          1, (row_split.min_bytes + row_bytes - 1) / std::max<std::size_t>(1, row_bytes));
-      auto rows_per_split =
-          std::max(min_rows, (nrows + row_split.max_splits - 1) / row_split.max_splits);
-      dim_subspans[row_dim] =
-          SplitRowSpans(std::move(dim_subspans[row_dim]), rows_per_split);
+      auto nsplits = row_split.max_splits;
+      if (row_split.min_bytes > 0) {
+        nsplits = std::min(nsplits, nrows * row_bytes / row_split.min_bytes);
+      }
+      nsplits = std::min(nsplits, nrows);
+      if (nsplits > 1) {
+        dim_subspans[row_dim] =
+            SplitRowSpans(std::move(dim_subspans[row_dim]), nrows, nsplits);
+      }
     }
 
     auto [dim_spans, contiguous] = CartesianProduct(dim_subspans);

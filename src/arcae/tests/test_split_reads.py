@@ -4,9 +4,11 @@ from numpy.testing import assert_array_equal
 
 import arcae
 
-NROW = 20_000
+NROW = 70_000
 NCHAN = 16
 NCORR = 4
+# Reads are split into pieces of at least this many bytes
+MIN_SPLIT_BYTES = 8 * 1024 * 1024
 
 
 @pytest.fixture(scope="module")
@@ -71,7 +73,7 @@ def test_split_reads_match(split_table, index, ninstances):
         assert T.getcol("DATA", index=index, result=result) is result
         assert_array_equal(result, expected)
 
-    # Reads of at least one MiB per instance are spread over the instances
-    if expected.nbytes >= ninstances * 1024 * 1024:
+    # Reads of at least MIN_SPLIT_BYTES per instance are spread over the instances
+    if expected.nbytes >= ninstances * MIN_SPLIT_BYTES:
         busy = [a["io_bytes"] - b["io_bytes"] for a, b in zip(after, before)]
         assert all(b > 0 for b in busy)

@@ -13,6 +13,7 @@ X.Y.Z (DD-MM-YYYY)
   where they could return wrong results, such as zero rows (:pr:`260`)
 * Add per-instance I/O statistics, and benchmarks of how evenly reads are spread
   over table instances (:pr:`260`)
+* Remove the dev transpose test (:pr:`259`)
 * Write each column in one task, more than halving the overhead of small
   writes (:pr:`255`)
 * Reduce the cost of checking writes to variably shaped columns (:pr:`255`)

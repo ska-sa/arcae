@@ -5,7 +5,9 @@ their contents as Apache Arrow tables. Paths below are relative to the
 [ratt-ru/arcae](https://github.com/ratt-ru/arcae) repository root.
 This document only applies to the `0.4.0-dev` branch which contains
 true multi-threaded write support via the `FileLocker` changes. The `main` branch does not modify `FileLocker` and is only safe for
-multi-threaded reads.
+multi-threaded reads. The exception is §3, which describes how `main` spreads
+I/O over instances as of [#260](https://github.com/ska-sa/arcae/pull/260),
+pending its port to `0.4.0-dev`.
 
 ## Why arcae exists
 
@@ -78,12 +80,20 @@ Operations are dispatched onto an instance through three templated entry points:
 
 Each dispatch:
 
-1. picks an instance,
+1. picks an instance (§3), reserving the functor's estimated I/O on it,
 2. submits the functor to that instance's single thread,
 3. wraps the call in a `MaybeLockAndFinalise` guard (see §4),
-4. invokes the functor with the instance's `TableProxy&`,
-5. converts any `casacore::AipsError` into an `arrow::Status` so exceptions never
+4. fails with `Status::Invalid("TableProxy is closed")` if the instance's table
+   has been closed (see below),
+5. invokes the functor with the instance's `TableProxy&`,
+6. converts any `casacore::AipsError` into an `arrow::Status` so exceptions never
    escape a pool thread.
+
+`Close()` closes each instance's table on its isolation thread, and only marks
+the ITP closed once every instance has closed. Tasks dispatched in between pass
+`CheckClosed()` and are queued behind the close. casacore answers some queries
+on a closed table instead of failing them (`nrow()` returns zero), so step 4
+checks the table on the isolation thread itself, which cannot race the close.
 
 Dispatch lambdas capture `weak_from_this()` (not raw `this`); the task re-locks
 the weak pointer at start and bails with `Status::Invalid("TableProxy is closed")`
@@ -98,21 +108,48 @@ a `dependencies_` edge so the parent ITP outlives the child.
 
 ## 3. Multiplexing I/O across instances (read fan-out)
 
-Reads are spread across all `N` instances. `GetInstance()`
-(`isolated_table_proxy.cc`) selects the **least-loaded** instance by querying each
-pool's pending task count and returning the one with the fewest:
+### Choosing an instance
 
-```cpp
-for (std::size_t i = 0; i < proxy_pools_.size(); ++i) {
-  const auto pool_tasks = proxy_pools_[i].io_pool_->GetNumTasks();
-  if (pool_tasks < num_tasks) { instance = i; num_tasks = pool_tasks; }
-}
-```
+Each dispatch carries an estimate of its I/O in bytes (`RunAsync(fn, cost)`):
+the size of each group of chunks for reads, the size of the input array for
+writes, and a nominal `kDefaultTaskCost` of 1 MiB otherwise (metadata, and
+partitioning a read, which may read a small column itself). `Dispatch(cost)`
+(`isolated_table_proxy.cc`) picks the instance with the **least outstanding
+cost** and reserves the cost on it. The task releases the reservation when it
+completes, before its future's continuations run. Notes:
 
-A single high-level read is decomposed into many independent chunk reads, each
-dispatched via `RunAsync`/`Then` with `lock_type = Read`, and those chunks fan out
-across the instances — this is the **multi-reader** parallelism. The decomposition
-machinery lives alongside the ITP:
+- **Bytes, not task counts.** Task counts cannot tell a metadata lookup from a
+  50 MB read, and queued pieces of a large read were placed behind other
+  columns' reads.
+- **The dispatching task is discounted.** The reads following a partition are
+  dispatched from the partitioning instance's own thread. That instance is about
+  to become free, so the cost of a task running on the calling thread is
+  discounted.
+- **Ties go to instance 0.** This keeps successive calls on an idle proxy on one
+  instance, whose casacore caches are warm. Rotating ties was measured, and
+  slowed sequential 100-row reads by about a quarter with no gain for
+  concurrent reads.
+- **Statistics.** Reservations live in each instance's `InstanceStats`, together
+  with cumulative counts of tasks, queue wait, busy time and bytes read or
+  written. Proxies spawned from a parent share these, as they share its pools.
+  `Table._instance_stats()` exposes them for benchmarking
+  (`benchmarks/instance_balance.py`).
+
+### Splitting reads
+
+A single high-level read is decomposed into independent chunk reads, which are
+grouped and spread over the instances: the **multi-reader** parallelism. With one
+instance, the partitioning task reads the chunks itself, avoiding a hand-off.
+
+The row dimension of a fixed-shape selection is a single `casacore::RefRows`,
+gaps included, so it would otherwise always form one chunk.
+`DataPartition::Make` therefore takes `RowSplitOptions`, splitting the selected
+rows into at most one piece per instance, each at least 1 MiB. Missing
+(negative) rows stay in chunks of their own. Variably-shaped columns already
+form one chunk per row. `GroupChunks` then groups the chunks into one group per
+instance, with similar numbers of elements.
+
+The decomposition machinery lives alongside the ITP:
 
 - `selection.{h}` — the row/column index selection requested by the caller.
 - `data_partition.{h,cc}` — splits a selection into per-chunk work items.
@@ -190,7 +227,7 @@ This yields the overall concurrency model:
 
 | Workload | Routing | Lock |
 |----------|---------|------|
-| Reads | least-loaded of `N` instances (fan-out) | `Read` (shared) |
+| Reads | least outstanding I/O of `N` instances (fan-out) | `Read` (shared) |
 | Writes | instance 0 only (serialised) | `Write` (exclusive) |
 
 ## 6. Marshalling CASA data into Arrow, exposed via Cython

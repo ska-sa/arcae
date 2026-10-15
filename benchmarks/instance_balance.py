@@ -170,6 +170,21 @@ def threads_rows(T, args):
     return {}
 
 
+def concurrent_requests(T, args):
+    """Python threads issuing independent reads of consecutive row ranges,
+    covering the largest column"""
+    nrow = T.nrow()
+    step = args.request_rows
+    with ThreadPoolExecutor(args.threads) as pool:
+        futures = [
+            pool.submit(T.getcol, "DATA", index=(slice(s, min(s + step, nrow)),))
+            for s in range(0, nrow, step)
+        ]
+        for f in futures:
+            f.result()
+    return {}
+
+
 def threads_columns(T, args):
     """Python threads each reading a different fixed shape column"""
     columns = [c for c in T.columns() if c != "RAGGED"]
@@ -214,6 +229,7 @@ CASES = {
         ragged,
         to_arrow,
         threads_rows,
+        concurrent_requests,
         threads_columns,
         small_during_big,
     ]
@@ -277,6 +293,12 @@ def main():
     parser.add_argument("--ninstances", type=int, nargs="+", default=[1, 2, 4, 8])
     parser.add_argument("--case", action="append", choices=list(CASES))
     parser.add_argument("--threads", type=int, default=4)
+    parser.add_argument(
+        "--request-rows",
+        type=int,
+        default=10_000,
+        help="Rows read by each request of concurrent_requests",
+    )
     parser.add_argument("--snapshot", help="Import arcae from this snapshot")
     parser.add_argument("--json", action="store_true", help="Print results as JSON")
     parser.add_argument(

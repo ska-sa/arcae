@@ -259,7 +259,9 @@ class IsolatedTableProxy : public std::enable_shared_from_this<IsolatedTableProx
   };
 
   // Choose the instance with the least outstanding I/O for a task of the given
-  // cost, and reserve the cost on it. Ties go to the lowest numbered instance.
+  // cost, and reserve the cost on it. Ties go to the lowest numbered instance,
+  // which keeps successive calls on an idle proxy on one instance, whose caches
+  // are warm. Spreading ties over the instances slowed small sequential reads.
   // The reservation is released when the task runs, so a task dropped by a
   // shut down pool leaves it in place: the proxy is closing in that case
   Submission Dispatch(std::int64_t cost) const;

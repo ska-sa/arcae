@@ -375,11 +375,21 @@ TEST_F(IsolatedTableProxyTest, PlaceByOutstandingCost) {
   for (auto& f : small) ASSERT_OK(f.MoveResult());
   ASSERT_OK(large.MoveResult());
 
-  // Completed tasks release their reservations, after which ties go to the first
-  ASSERT_OK(itp->RunSync([](TableProxy&) { return true; }));
+  // Completed tasks release their reservations, so two outstanding tasks
+  // go to different instances. A leaked reservation would place both on one
+  auto release_pair = arrow::Future<>::Make();
+  std::vector<arrow::Future<bool>> pair;
+  for (int i = 0; i < 2; ++i) {
+    pair.push_back(itp->RunAsync([release_pair](TableProxy&) {
+      release_pair.Wait();
+      return true;
+    }));
+  }
   stats = itp->GetInstanceStats();
   EXPECT_EQ(stats[0].submitted, 2);
-  EXPECT_EQ(stats[1].submitted, 3);
+  EXPECT_EQ(stats[1].submitted, 4);
+  release_pair.MarkFinished();
+  for (auto& f : pair) ASSERT_OK(f.MoveResult());
 }
 
 }  // namespace

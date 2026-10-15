@@ -379,44 +379,50 @@ Future<std::shared_ptr<Array>> ReadImpl(const std::shared_ptr<IsolatedTableProxy
   };
 
   auto fan_out = itp->nInstances() > 1;
+  // Split the rows of large reads so that they can be spread over the instances.
+  // Splits are large enough that the extra hand-offs are negligible
+  constexpr std::size_t kMinSplitBytes = 1024 * 1024;
+  auto row_split = RowSplitOptions{itp->nInstances(), kMinSplitBytes};
 
-  auto part_fut = itp->RunAsync([column = column, selection = selection, result = result,
-                                 fan_out](const TableProxy& tp) mutable
-                                -> Result<PartitionResult> {
-    ARROW_RETURN_NOT_OK(ColumnExists(tp.table(), column));
-    auto table_column = TableColumn(tp.table(), column);
+  auto part_fut =
+      itp->RunAsync([column = column, selection = selection, result = result, fan_out,
+                     row_split](const TableProxy& tp) mutable -> Result<PartitionResult> {
+        ARROW_RETURN_NOT_OK(ColumnExists(tp.table(), column));
+        auto table_column = TableColumn(tp.table(), column);
 
-    // Get the shape of the result, given the supplied selection.
-    // If a result array is supplied we can derive ResultShapeData from it
-    // Also iterate over the selected rows and negate any missing rows as
-    // this elides reads in these cases.
-    // Otherwise the ResultShapeData must be derived wholly from
-    // the contents of the column
-    auto shape_data = std::make_shared<ResultShapeData>();
-    if (result) {
-      ARROW_ASSIGN_OR_RAISE(*shape_data,
-                            ResultShapeData::FromArray(table_column, result));
-      ARROW_ASSIGN_OR_RAISE(
-          selection, shape_data->NegateMissingSelectedRows(table_column, selection));
-    } else {
-      ARROW_ASSIGN_OR_RAISE(*shape_data,
-                            ResultShapeData::MakeRead(table_column, selection));
-    }
+        // Get the shape of the result, given the supplied selection.
+        // If a result array is supplied we can derive ResultShapeData from it
+        // Also iterate over the selected rows and negate any missing rows as
+        // this elides reads in these cases.
+        // Otherwise the ResultShapeData must be derived wholly from
+        // the contents of the column
+        auto shape_data = std::make_shared<ResultShapeData>();
+        if (result) {
+          ARROW_ASSIGN_OR_RAISE(*shape_data,
+                                ResultShapeData::FromArray(table_column, result));
+          ARROW_ASSIGN_OR_RAISE(
+              selection, shape_data->NegateMissingSelectedRows(table_column, selection));
+        } else {
+          ARROW_ASSIGN_OR_RAISE(*shape_data,
+                                ResultShapeData::MakeRead(table_column, selection));
+        }
 
-    ARROW_ASSIGN_OR_RAISE(auto partition, DataPartition::Make(selection, *shape_data));
-    auto shared_partition = std::make_shared<DataPartition>(std::move(partition));
-    if (fan_out && shared_partition->nChunks() > 1) {
-      return PartitionResult{std::move(shared_partition), std::move(shape_data), nullptr};
-    }
+        ARROW_ASSIGN_OR_RAISE(auto partition,
+                              DataPartition::Make(selection, *shape_data, row_split));
+        auto shared_partition = std::make_shared<DataPartition>(std::move(partition));
+        if (fan_out && shared_partition->nChunks() > 1) {
+          return PartitionResult{std::move(shared_partition), std::move(shape_data),
+                                 nullptr};
+        }
 
-    ARROW_ASSIGN_OR_RAISE(
-        auto buffer, GetResultBufferOrAllocate(shared_partition->nElements(),
+        ARROW_ASSIGN_OR_RAISE(auto buffer, GetResultBufferOrAllocate(
+                                               shared_partition->nElements(),
                                                shared_partition->GetDataType(), result));
-    ARROW_RETURN_NOT_OK(ReadChunks(tp, column, shared_partition->GetDataType(),
-                                   shared_partition->data_chunks_, *buffer));
-    ARROW_ASSIGN_OR_RAISE(auto array, MakeArray(*shape_data, buffer));
-    return PartitionResult{nullptr, nullptr, std::move(array)};
-  });
+        ARROW_RETURN_NOT_OK(ReadChunks(tp, column, shared_partition->GetDataType(),
+                                       shared_partition->data_chunks_, *buffer));
+        ARROW_ASSIGN_OR_RAISE(auto array, MakeArray(*shape_data, buffer));
+        return PartitionResult{nullptr, nullptr, std::move(array)};
+      });
 
   // Otherwise spread groups of chunks across the instances,
   // reading each group in a single task, then create an output array

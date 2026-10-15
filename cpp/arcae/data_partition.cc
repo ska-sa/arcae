@@ -120,6 +120,25 @@ Result<std::vector<SpanPair>> MakeSubSpans(const IndexSpan& disk_span,
   return result;
 }
 
+// Split spans of rows that are read from disk into consecutive pieces of at
+// most rows_per_split rows. Spans of missing (negative) rows are not split
+std::vector<SpanPair> SplitRowSpans(std::vector<SpanPair>&& spans,
+                                    std::size_t rows_per_split) {
+  assert(rows_per_split > 0);
+  std::vector<SpanPair> result;
+  for (auto& [disk, mem] : spans) {
+    if (disk.size() <= rows_per_split || disk[0] < 0) {
+      result.push_back({std::move(disk), std::move(mem)});
+      continue;
+    }
+    for (std::size_t start = 0; start < disk.size(); start += rows_per_split) {
+      result.push_back(
+          {disk.subspan(start, rows_per_split), mem.subspan(start, rows_per_split)});
+    }
+  }
+  return result;
+}
+
 struct CartesianProductResult {
   std::vector<SpanPairs> dim_spans;
   std::vector<bool> contiguous;
@@ -409,7 +428,8 @@ std::string DataChunk::ToString() const {
 }
 
 Result<DataPartition> DataPartition::Make(const Selection& selection,
-                                          const ResultShapeData& result_shape) {
+                                          const ResultShapeData& result_shape,
+                                          const RowSplitOptions& row_split) {
   // Construct an id cache, holding Index vectors
   // Spans will be constructed over these vectors
   // Initially, this holds indices that monotically
@@ -468,6 +488,29 @@ Result<DataPartition> DataPartition::Make(const Selection& selection,
       auto [disk_span, mem_span] = GetSpanPair(d, shape[d]);
       ARROW_ASSIGN_OR_RAISE(auto spans, MakeSubSpans(disk_span, mem_span, d == row_dim));
       dim_subspans.emplace_back(std::move(spans));
+    }
+
+    // Split the rows into pieces of roughly equal size,
+    // none of which are smaller than the minimum
+    if (row_split.max_splits > 1) {
+      ARROW_ASSIGN_OR_RAISE(auto dtype_size,
+                            CasaDataTypeSize(result_shape.GetDataType()));
+      std::size_t row_bytes = dtype_size;
+      std::size_t nrows = 0;
+      for (int d = 0; d < row_dim; ++d) {
+        std::size_t dim_size = 0;
+        for (const auto& span : dim_subspans[d]) dim_size += span.disk.size();
+        row_bytes *= dim_size;
+      }
+      for (const auto& span : dim_subspans[row_dim]) {
+        if (span.disk.size() > 0 && span.disk[0] >= 0) nrows += span.disk.size();
+      }
+      auto min_rows = std::max<std::size_t>(
+          1, (row_split.min_bytes + row_bytes - 1) / std::max<std::size_t>(1, row_bytes));
+      auto rows_per_split =
+          std::max(min_rows, (nrows + row_split.max_splits - 1) / row_split.max_splits);
+      dim_subspans[row_dim] =
+          SplitRowSpans(std::move(dim_subspans[row_dim]), rows_per_split);
     }
 
     auto [dim_spans, contiguous] = CartesianProduct(dim_subspans);

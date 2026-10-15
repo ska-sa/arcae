@@ -201,6 +201,15 @@ struct DataChunk {
   std::string ToString() const;
 };
 
+// Controls splitting the selected rows of a fixed shape result into chunks,
+// so that a large read can be spread over several table instances
+struct RowSplitOptions {
+  // Split the rows into at most this many chunks
+  std::size_t max_splits = 1;
+  // Don't split the rows into chunks smaller than this many bytes
+  std::size_t min_bytes = 0;
+};
+
 // A DataPartition is a mapping between indices on disk
 // and indices in memory. The partition is split into
 // multiple chunks, where each chunk represents a contiguous
@@ -209,8 +218,10 @@ struct DataPartition {
   // Construct a DataPartition from a selection object describing indices of
   // data within a column on disk and a result_shape object describing the
   // layout of the source/destination of data within memory.
+  // Rows of a fixed shape result are split into chunks according to row_split.
   static arrow::Result<DataPartition> Make(const Selection& selection,
-                                           const ResultShapeData& result_shape);
+                                           const ResultShapeData& result_shape,
+                                           const RowSplitOptions& row_split = {});
 
   std::vector<DataChunk> data_chunks_;
   casacore::DataType casa_dtype_;

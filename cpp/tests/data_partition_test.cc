@@ -16,6 +16,7 @@
 using ::arcae::detail::DataPartition;
 using ::arcae::detail::IndexType;
 using ::arcae::detail::ResultShapeData;
+using ::arcae::detail::RowSplitOptions;
 using ::arcae::detail::SelectionBuilder;
 using ::arcae::detail::SpanPairs;
 
@@ -140,6 +141,78 @@ TEST(DataPartitionTest, Variable) {
             Slicer(IPosition({0}), IPosition({0}), Slicer::endIsLast));
   EXPECT_EQ(partition.Chunk(3).SectionSlicer(),
             Slicer(IPosition({0, 3}), IPosition({0, 3}), Slicer::endIsLast));
+}
+
+// Each row of a {2, 3} complex cell is 2 x 3 x 8 = 48 bytes
+static constexpr std::size_t kRowBytes = 2 * 3 * 8;
+
+// Rows are split into at most max_splits chunks, each of consecutive rows
+TEST(DataPartitionTest, SplitRows) {
+  auto result_shape =
+      ResultShapeData{"DATA", IPosition{2, 3, 10}, 3, DataType::TpComplex, std::nullopt};
+  auto selection = SelectionBuilder().Order('F').Build();
+
+  ASSERT_OK_AND_ASSIGN(auto partition,
+                       DataPartition::Make(selection, result_shape, RowSplitOptions{4}));
+  ASSERT_EQ(partition.nChunks(), 4);
+  EXPECT_THAT(partition.Chunk(0).Disk(2), ::testing::ElementsAre(0, 1, 2));
+  EXPECT_THAT(partition.Chunk(1).Disk(2), ::testing::ElementsAre(3, 4, 5));
+  EXPECT_THAT(partition.Chunk(2).Disk(2), ::testing::ElementsAre(6, 7, 8));
+  EXPECT_THAT(partition.Chunk(3).Disk(2), ::testing::ElementsAre(9));
+  EXPECT_EQ(partition.nElements(), 2 * 3 * 10);
+
+  for (std::size_t c = 0; c < partition.nChunks(); ++c) {
+    const auto& chunk = partition.Chunk(c);
+    EXPECT_TRUE(chunk.IsContiguous());
+    EXPECT_EQ(chunk.FlatOffset(), 2 * 3 * chunk.Mem(2)[0]);
+    EXPECT_EQ(chunk.SectionSlicer(),
+              Slicer(IPosition({0, 0}), IPosition({1, 2}), Slicer::endIsLast));
+  }
+}
+
+// Chunks are not split below the minimum number of bytes
+TEST(DataPartitionTest, SplitRowsMinimumBytes) {
+  auto result_shape =
+      ResultShapeData{"DATA", IPosition{2, 3, 10}, 3, DataType::TpComplex, std::nullopt};
+  auto selection = SelectionBuilder().Order('F').Build();
+
+  ASSERT_OK_AND_ASSIGN(
+      auto partition,
+      DataPartition::Make(selection, result_shape, RowSplitOptions{4, 5 * kRowBytes}));
+  ASSERT_EQ(partition.nChunks(), 2);
+  EXPECT_THAT(partition.Chunk(0).Disk(2), ::testing::ElementsAre(0, 1, 2, 3, 4));
+  EXPECT_THAT(partition.Chunk(1).Disk(2), ::testing::ElementsAre(5, 6, 7, 8, 9));
+
+  // A read smaller than the minimum is not split
+  ASSERT_OK_AND_ASSIGN(
+      partition,
+      DataPartition::Make(selection, result_shape, RowSplitOptions{4, 100 * kRowBytes}));
+  EXPECT_EQ(partition.nChunks(), 1);
+}
+
+// Selected rows with gaps and in arbitrary order are split in disk order,
+// while missing rows remain in a chunk of their own
+TEST(DataPartitionTest, SplitSelectedRows) {
+  auto result_shape =
+      ResultShapeData{"DATA", IPosition{2, 3, 8}, 3, DataType::TpComplex, std::nullopt};
+  auto selection = SelectionBuilder()
+                       .Order('F')
+                       .AddEmpty()
+                       .AddEmpty()
+                       .Add({8, -1, 5, 6, 7, 4, -1, 0})
+                       .Build();
+
+  ASSERT_OK_AND_ASSIGN(auto partition,
+                       DataPartition::Make(selection, result_shape, RowSplitOptions{3}));
+  ASSERT_EQ(partition.nChunks(), 4);
+  EXPECT_THAT(partition.Chunk(0).Disk(2), ::testing::ElementsAre(-1, -1));
+  EXPECT_THAT(partition.Chunk(1).Disk(2), ::testing::ElementsAre(0, 4));
+  EXPECT_THAT(partition.Chunk(1).Mem(2), ::testing::ElementsAre(7, 5));
+  EXPECT_THAT(partition.Chunk(2).Disk(2), ::testing::ElementsAre(5, 6));
+  EXPECT_THAT(partition.Chunk(2).Mem(2), ::testing::ElementsAre(2, 3));
+  EXPECT_THAT(partition.Chunk(3).Disk(2), ::testing::ElementsAre(7, 8));
+  EXPECT_THAT(partition.Chunk(3).Mem(2), ::testing::ElementsAre(4, 0));
+  EXPECT_EQ(partition.nElements(), 2 * 3 * 8);
 }
 
 }  // namespace

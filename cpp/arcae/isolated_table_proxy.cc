@@ -29,8 +29,8 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 
-// Statistics of the instance whose task is running on this thread
-thread_local InstanceStats* current_stats = nullptr;
+// The task running on this thread, if any
+thread_local RunningTask current_task;
 
 std::int64_t ElapsedNs(Clock::time_point start, Clock::time_point end) {
   return std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
@@ -39,29 +39,51 @@ std::int64_t ElapsedNs(Clock::time_point start, Clock::time_point end) {
 }  // namespace
 
 void RecordIoBytes(std::int64_t nbytes) {
-  if (current_stats) current_stats->io_bytes.fetch_add(nbytes, std::memory_order_relaxed);
+  if (auto* stats = current_task.stats) {
+    stats->io_bytes.fetch_add(nbytes, std::memory_order_relaxed);
+  }
 }
 
-IsolatedTableProxy::Submission IsolatedTableProxy::RecordSubmission(
-    std::size_t instance) const {
-  assert(instance < proxy_pools_.size());
+IsolatedTableProxy::Submission IsolatedTableProxy::Dispatch(std::int64_t cost) const {
+  assert(proxy_pools_.size() > 0);
+  constexpr auto relaxed = std::memory_order_relaxed;
+  std::size_t instance = 0;
+  auto least = std::numeric_limits<std::int64_t>::max();
+
+  for (std::size_t i = 0; i < proxy_pools_.size(); ++i) {
+    auto* stats = proxy_pools_[i].stats_.get();
+    auto load = stats->outstanding_cost.load(relaxed);
+    // A task dispatching work from its isolation thread is about to complete
+    if (stats == current_task.stats) load -= current_task.cost;
+    if (load < least) {
+      instance = i;
+      least = load;
+    }
+  }
+
+  // Concurrent dispatches may choose the same instance before either
+  // reserves its cost. This only costs balance, and is rare
   auto* stats = proxy_pools_[instance].stats_.get();
-  stats->submitted.fetch_add(1, std::memory_order_relaxed);
-  return Submission{stats, Clock::now()};
+  stats->outstanding_cost.fetch_add(cost, relaxed);
+  stats->submitted.fetch_add(1, relaxed);
+  return Submission{instance, stats, Clock::now(), cost};
 }
 
 IsolatedTableProxy::TaskScope::TaskScope(const Submission& submission)
-    : stats_(submission.stats), previous_(current_stats) {
+    : stats_(submission.stats), cost_(submission.cost), previous_(current_task) {
   if (!stats_) return;
   start_ = Clock::now();
   stats_->wait_ns.fetch_add(ElapsedNs(submission.time, start_),
                             std::memory_order_relaxed);
-  current_stats = stats_;
+  current_task = {stats_, cost_};
 }
 
 IsolatedTableProxy::TaskScope::~TaskScope() {
   if (!stats_) return;
-  current_stats = previous_;
+  current_task = previous_;
+  // Release the reservation before the task's future completes, so that
+  // continuations dispatching further work see this instance as free
+  stats_->outstanding_cost.fetch_sub(cost_, std::memory_order_relaxed);
   stats_->busy_ns.fetch_add(ElapsedNs(start_, Clock::now()), std::memory_order_relaxed);
   stats_->completed.fetch_add(1, std::memory_order_relaxed);
 }
@@ -80,28 +102,6 @@ std::vector<InstanceStatsSnapshot> IsolatedTableProxy::GetInstanceStats() const 
 }
 
 bool IsolatedTableProxy::IsClosed() const { return is_closed_; }
-
-std::size_t IsolatedTableProxy::GetInstance() const {
-  using NumTasksType = decltype(ProxyAndPool::io_pool_->GetNumTasks());
-  std::size_t instance = 0;
-  NumTasksType num_tasks = std::numeric_limits<NumTasksType>::max();
-  assert(proxy_pools_.size() > 0);
-
-  for (std::size_t i = 0; i < proxy_pools_.size(); ++i) {
-    const auto& pool = proxy_pools_[i].io_pool_;
-    auto pool_tasks = pool->GetNumTasks();
-    // Continuations dispatching further work, such as the reads following a
-    // partition, run on the isolation thread that completed the previous task.
-    // That task still counts as running, but its instance is about to be free
-    if (pool_tasks > 0 && pool->OwnsThisThread()) --pool_tasks;
-    if (pool_tasks < num_tasks) {
-      instance = i;
-      num_tasks = pool_tasks;
-    }
-  }
-
-  return instance;
-}
 
 const std::shared_ptr<TableProxy>& IsolatedTableProxy::GetProxy(
     std::size_t instance) const {

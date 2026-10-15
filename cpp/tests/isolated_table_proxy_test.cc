@@ -335,4 +335,51 @@ TEST_F(IsolatedTableProxyTest, DispatchFromIsolationThread) {
   ASSERT_OK(dispatched->MoveResult());
 }
 
+// Tasks are placed on the instance with the least outstanding I/O,
+// rather than the fewest tasks
+TEST_F(IsolatedTableProxyTest, PlaceByOutstandingCost) {
+  ASSERT_OK_AND_ASSIGN(auto itp, IsolatedTableProxy::Make(
+                                     [name = table_name_]() {
+                                       return std::make_shared<TableProxy>(name, Record(),
+                                                                           Table::Old);
+                                     },
+                                     2));
+
+  // Occupy the first instance with a large read, until released
+  constexpr std::int64_t kLargeCost = 100 * 1024 * 1024;
+  auto release = arrow::Future<>::Make();
+  auto large = itp->RunAsync(
+      [release](TableProxy&) {
+        release.Wait();
+        return true;
+      },
+      kLargeCost);
+
+  // Small tasks all go to the second instance, although after the first of
+  // them it has as many outstanding tasks as the first instance.
+  // They stay outstanding until released, so placement doesn't depend on timing
+  auto release_small = arrow::Future<>::Make();
+  std::vector<arrow::Future<bool>> small;
+  for (int i = 0; i < 3; ++i) {
+    small.push_back(itp->RunAsync([release_small](TableProxy&) {
+      release_small.Wait();
+      return true;
+    }));
+  }
+  auto stats = itp->GetInstanceStats();
+  EXPECT_EQ(stats[0].submitted, 1);
+  EXPECT_EQ(stats[1].submitted, 3);
+
+  release_small.MarkFinished();
+  release.MarkFinished();
+  for (auto& f : small) ASSERT_OK(f.MoveResult());
+  ASSERT_OK(large.MoveResult());
+
+  // Completed tasks release their reservations, after which ties go to the first
+  ASSERT_OK(itp->RunSync([](TableProxy&) { return true; }));
+  stats = itp->GetInstanceStats();
+  EXPECT_EQ(stats[0].submitted, 2);
+  EXPECT_EQ(stats[1].submitted, 3);
+}
+
 }  // namespace

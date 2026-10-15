@@ -31,6 +31,9 @@ namespace detail {
 struct InstanceStats {
   // Updated by submitting threads
   alignas(64) std::atomic<std::int64_t> submitted{0};
+  // Estimated bytes of I/O of submitted, but incomplete, tasks.
+  // Also released by the isolation thread as tasks complete
+  std::atomic<std::int64_t> outstanding_cost{0};
   // Updated by the isolation thread
   alignas(64) std::atomic<std::int64_t> completed{0};
   // Time from submission until a task starts running
@@ -49,6 +52,17 @@ struct InstanceStatsSnapshot {
   std::int64_t busy_ns;
   std::int64_t io_bytes;
 };
+
+// A task running on an isolation thread
+struct RunningTask {
+  InstanceStats* stats = nullptr;
+  // Estimated bytes of I/O reserved by the task
+  std::int64_t cost = 0;
+};
+
+// Estimated cost of a task whose I/O is unknown, such as reading metadata,
+// or partitioning a read, which may read small columns itself
+inline constexpr std::int64_t kDefaultTaskCost = 1024 * 1024;
 
 // Attribute nbytes of I/O to the instance running the calling task.
 // Does nothing outside of a task dispatched by an IsolatedTableProxy
@@ -71,111 +85,80 @@ class IsolatedTableProxy : public std::enable_shared_from_this<IsolatedTableProx
 
   // Runs function with signature
   // ReturnType Function(const TableProxy &) on the isolation thread
-  // returning an arrow::Future<ReturnType>
+  // returning an arrow::Future<ReturnType>.
+  // cost estimates the bytes of I/O performed by the function
   template <typename Fn, typename = std::enable_if_t<
                              std::is_invocable_v<Fn, const casacore::TableProxy&>>>
-  ArrowFutureType<Fn, const casacore::TableProxy&> RunAsync(Fn&& functor) const {
+  ArrowFutureType<Fn, const casacore::TableProxy&> RunAsync(
+      Fn&& functor, std::int64_t cost = kDefaultTaskCost) const {
     using ResultType = ArrowResultType<Fn, const casacore::TableProxy&>;
     ARROW_RETURN_NOT_OK(CheckClosed());
-    auto instance = GetInstance();
-    return RunInPool([this, instance = instance, submission = RecordSubmission(instance),
+    auto submission = Dispatch(cost);
+    return RunInPool(submission.instance,
+                     [this, submission = submission,
                       functor = std::forward<Fn>(functor)]() mutable -> ResultType {
-      return Invoke<ResultType>(submission, functor, *this->GetProxy(instance));
-    });
+                       return Invoke<ResultType>(submission, functor,
+                                                 *this->GetProxy(submission.instance));
+                     });
   }
 
   // Runs functions with signature
   // ReturnType Function(TableProxy &) on the isolation thread
-  // returning an arrow::Future<ReturnType>
+  // returning an arrow::Future<ReturnType>.
+  // cost estimates the bytes of I/O performed by the function
   template <typename Fn,
             typename = std::enable_if_t<std::is_invocable_v<Fn, casacore::TableProxy&>>>
-  ArrowFutureType<Fn, casacore::TableProxy&> RunAsync(Fn&& functor) {
+  ArrowFutureType<Fn, casacore::TableProxy&> RunAsync(
+      Fn&& functor, std::int64_t cost = kDefaultTaskCost) {
     using ResultType = ArrowFutureType<Fn, casacore::TableProxy&>;
     ARROW_RETURN_NOT_OK(CheckClosed());
-    auto instance = GetInstance();
-    return RunInPool(instance,
-                     [this, instance = instance, submission = RecordSubmission(instance),
+    auto submission = Dispatch(cost);
+    return RunInPool(submission.instance,
+                     [this, submission = submission,
                       functor = std::forward<Fn>(functor)]() mutable -> ResultType {
                        return Invoke<ResultType>(submission, functor,
-                                                 *this->GetProxy(instance));
+                                                 *this->GetProxy(submission.instance));
                      });
-  }
-
-  template <typename Fn, typename R,
-            typename = std::enable_if_t<
-                std::is_invocable_v<Fn, const R&, const casacore::TableProxy&>>>
-  ArrowFutureType<Fn, const R&, const casacore::TableProxy&> Then(
-      arrow::Future<R>& future, Fn&& functor) const {
-    using ResultType = ArrowFutureType<Fn, const R&, const casacore::TableProxy&>;
-    ARROW_RETURN_NOT_OK(CheckClosed());
-    auto instance = GetInstance();
-    return future.Then(
-        [this, instance = instance,
-         fn = std::forward<Fn>(functor)](const R& result) mutable -> ResultType {
-          // The continuation is only queued once the future completes,
-          // so its queue wait can't be observed: record it as submitted now
-          return Invoke<ResultType>(RecordSubmission(instance), fn, result,
-                                    *this->GetProxy(instance));
-        },
-        {},
-        arrow::CallbackOptions{arrow::ShouldSchedule::Always,
-                               this->GetPool(instance).get()});
-  }
-
-  template <typename Fn, typename R,
-            typename = std::enable_if_t<
-                std::is_invocable_v<Fn, const R&, casacore::TableProxy&>>>
-  ArrowFutureType<Fn, const R&, casacore::TableProxy&> Then(arrow::Future<R>& future,
-                                                            Fn&& functor) {
-    using ResultType = ArrowFutureType<Fn, const R&, casacore::TableProxy&>;
-    ARROW_RETURN_NOT_OK(CheckClosed());
-    auto instance = GetInstance();
-    return future.Then(
-        [this, instance = instance,
-         fn = std::forward<Fn>(functor)](const R& result) mutable -> ResultType {
-          // The continuation is only queued once the future completes,
-          // so its queue wait can't be observed: record it as submitted now
-          return Invoke<ResultType>(RecordSubmission(instance), fn, result,
-                                    *this->GetProxy(instance));
-        },
-        {},
-        arrow::CallbackOptions{arrow::ShouldSchedule::Always,
-                               this->GetPool(instance).get()});
   }
 
   // Runs functions with signature
   // ReturnType Function(const TableProxy &) on the isolation thread
   // If ReturnType is not an arrow::Result, it will be converted
-  // to an arrow::Result<ReturnType>
+  // to an arrow::Result<ReturnType>.
+  // cost estimates the bytes of I/O performed by the function
   template <typename Fn, typename = std::enable_if_t<
                              std::is_invocable_v<Fn, const casacore::TableProxy&>>>
-  ArrowResultType<Fn, const casacore::TableProxy&> RunSync(Fn&& functor) const {
-    using ResultType = ArrowFutureType<Fn, const casacore::TableProxy&>;
+  ArrowResultType<Fn, const casacore::TableProxy&> RunSync(
+      Fn&& functor, std::int64_t cost = kDefaultTaskCost) const {
+    using ResultType = ArrowResultType<Fn, const casacore::TableProxy&>;
     ARROW_RETURN_NOT_OK(CheckClosed());
-    auto instance = GetInstance();
-    return RunInPoolSync([this, instance = instance,
-                          submission = RecordSubmission(instance),
+    auto submission = Dispatch(cost);
+    return RunInPoolSync(submission.instance,
+                         [this, submission = submission,
                           functor = std::forward<Fn>(functor)]() mutable -> ResultType {
-      return Invoke<ResultType>(submission, functor, *this->GetProxy(instance));
-    });
+                           return Invoke<ResultType>(
+                               submission, functor, *this->GetProxy(submission.instance));
+                         });
   }
 
   // Runs functions with signature
   // ReturnType Function(TableProxy &) on the isolation thread
   // If ReturnType is not an arrow::Result, it will be converted
-  // to an arrow::Result<ReturnType>
+  // to an arrow::Result<ReturnType>.
+  // cost estimates the bytes of I/O performed by the function
   template <typename Fn,
             typename = std::enable_if_t<std::is_invocable_v<Fn, casacore::TableProxy&>>>
-  ArrowResultType<Fn, casacore::TableProxy&> RunSync(Fn&& functor) {
+  ArrowResultType<Fn, casacore::TableProxy&> RunSync(
+      Fn&& functor, std::int64_t cost = kDefaultTaskCost) {
     using ResultType = ArrowResultType<Fn, casacore::TableProxy&>;
     ARROW_RETURN_NOT_OK(CheckClosed());
-    auto instance = GetInstance();
-    return RunInPoolSync(
-        instance,
-        [this, instance = instance, submission = RecordSubmission(instance),
-         functor = std::forward<Fn>(functor)]() mutable -> ResultType {
-          return Invoke<ResultType>(submission, functor, *this->GetProxy(instance));
-        });
+    auto submission = Dispatch(cost);
+    return RunInPoolSync(submission.instance,
+                         [this, submission = submission,
+                          functor = std::forward<Fn>(functor)]() mutable -> ResultType {
+                           return Invoke<ResultType>(
+                               submission, functor, *this->GetProxy(submission.instance));
+                         });
   }
 
   // Construct an IsolatedTableProxy with the supplied function
@@ -265,18 +248,21 @@ class IsolatedTableProxy : public std::enable_shared_from_this<IsolatedTableProx
   IsolatedTableProxy& operator=(const IsolatedTableProxy& rhs) = delete;
   IsolatedTableProxy& operator=(IsolatedTableProxy&& rhs) = delete;
 
-  // Gets the least active instance
-  std::size_t GetInstance() const;
-
   // A task submitted to an instance.
   // stats is null for tasks that are not measured
   struct Submission {
+    std::size_t instance = 0;
     InstanceStats* stats = nullptr;
     std::chrono::steady_clock::time_point time;
+    // Estimated bytes of I/O, reserved on the instance until the task completes
+    std::int64_t cost = 0;
   };
 
-  // Record that a task is being submitted to the given instance
-  Submission RecordSubmission(std::size_t instance) const;
+  // Choose the instance with the least outstanding I/O for a task of the given
+  // cost, and reserve the cost on it. Ties go to the lowest numbered instance.
+  // The reservation is released when the task runs, so a task dropped by a
+  // shut down pool leaves it in place: the proxy is closing in that case
+  Submission Dispatch(std::int64_t cost) const;
 
   // Measures a task while it runs on an isolation thread,
   // attributing any I/O it records to the task's instance
@@ -289,7 +275,9 @@ class IsolatedTableProxy : public std::enable_shared_from_this<IsolatedTableProx
 
    private:
     InstanceStats* stats_;
-    InstanceStats* previous_;
+    std::int64_t cost_;
+    // The task this one is nested in, if any
+    RunningTask previous_;
     std::chrono::steady_clock::time_point start_;
   };
 
@@ -321,13 +309,6 @@ class IsolatedTableProxy : public std::enable_shared_from_this<IsolatedTableProx
   // and wait for the future's result
   template <typename Fn>
   ArrowResultType<Fn> RunInPoolSync(std::size_t instance, Fn&& functor) const {
-    return RunInPool(instance, std::forward<Fn>(functor)).MoveResult();
-  }
-
-  // Run the given functor in the I/O pool
-  // and wait for the future's result
-  template <typename Fn>
-  ArrowResultType<Fn> RunInPoolWait(std::size_t instance, Fn&& functor) {
     return RunInPool(instance, std::forward<Fn>(functor)).MoveResult();
   }
 

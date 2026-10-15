@@ -438,17 +438,23 @@ Future<std::shared_ptr<Array>> ReadImpl(const std::shared_ptr<IsolatedTableProxy
         auto chunks = std::make_shared<std::vector<DataChunk>>(
             std::move(result.partition->TakeChunks()));
         auto ends = GroupChunks(*chunks, itp->nInstances());
+        ARROW_ASSIGN_OR_RAISE(auto dtype_size, CasaDataTypeSize(casa_dtype));
         std::vector<Future<bool>> reads;
         reads.reserve(ends.size());
 
         for (std::size_t g = 0, begin = 0; g < ends.size(); begin = ends[g++]) {
+          std::size_t nbytes = 0;
+          for (auto c = begin; c < ends[g]; ++c) {
+            nbytes += (*chunks)[c].nElements() * dtype_size;
+          }
           reads.push_back(itp->RunAsync(
               [column = column, casa_dtype, chunks = chunks, buffer = buffer,
                begin = begin, end = ends[g]](const TableProxy& tp) -> Result<bool> {
                 auto group = absl::MakeConstSpan(*chunks).subspan(begin, end - begin);
                 ARROW_RETURN_NOT_OK(ReadChunks(tp, column, casa_dtype, group, *buffer));
                 return true;
-              }));
+              },
+              std::int64_t(nbytes)));
         }
 
         // Make the array from the now populated buffer

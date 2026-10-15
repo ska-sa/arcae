@@ -15,6 +15,7 @@
 #include <arrow/status.h>
 #include <arrow/type.h>
 #include <arrow/type_fwd.h>
+#include <arrow/util/byte_size.h>
 #include <arrow/util/future.h>
 #include <arrow/util/logging.h>
 
@@ -241,29 +242,34 @@ Future<bool> WriteImpl(const std::shared_ptr<IsolatedTableProxy>& itp,
   // Writes always use a single instance, so derive the shape of the input data,
   // partition it into contiguous chunks and write them in the same task:
   // each hand-off between threads costs more than writing a small column
-  return itp->RunAsync([column = column, selection = selection,
-                        data = data](TableProxy& tp) -> Result<bool> {
-    if (!tp.isWritable()) tp.reopenRW();
-    ARROW_RETURN_NOT_OK(ColumnExists(tp.table(), column));
-    auto table_column = TableColumn(tp.table(), column);
-    ARROW_ASSIGN_OR_RAISE(auto shape_data,
-                          ResultShapeData::MakeWrite(table_column, data, selection));
-    ARROW_ASSIGN_OR_RAISE(auto partition, DataPartition::Make(selection, shape_data));
+  auto cost = std::int64_t(arrow::util::TotalBufferSize(*data));
+  return itp->RunAsync(
+      [column = column, selection = selection,
+       data = data](TableProxy& tp) -> Result<bool> {
+        if (!tp.isWritable()) tp.reopenRW();
+        ARROW_RETURN_NOT_OK(ColumnExists(tp.table(), column));
+        auto table_column = TableColumn(tp.table(), column);
+        ARROW_ASSIGN_OR_RAISE(auto shape_data,
+                              ResultShapeData::MakeWrite(table_column, data, selection));
+        ARROW_ASSIGN_OR_RAISE(auto partition, DataPartition::Make(selection, shape_data));
 
-    auto casa_dtype = partition.GetDataType();
-    auto nelements = partition.nElements();
-    if (casacore::isComplex(casa_dtype)) nelements *= 2;
-    ARROW_ASSIGN_OR_RAISE(auto flat_array, GetFlatArray(data));
-    if (decltype(nelements)(flat_array->length()) != nelements) {
-      return Status::Invalid("Partition elements ", nelements,
-                             " don't match flat array elements ", flat_array->length());
-    }
+        auto casa_dtype = partition.GetDataType();
+        auto nelements = partition.nElements();
+        if (casacore::isComplex(casa_dtype)) nelements *= 2;
+        ARROW_ASSIGN_OR_RAISE(auto flat_array, GetFlatArray(data));
+        if (decltype(nelements)(flat_array->length()) != nelements) {
+          return Status::Invalid("Partition elements ", nelements,
+                                 " don't match flat array elements ",
+                                 flat_array->length());
+        }
 
-    ARROW_ASSIGN_OR_RAISE(auto buffer, ExtractBufferOrCopyValues(flat_array, casa_dtype));
-    ARROW_RETURN_NOT_OK(
-        WriteChunks(tp, column, casa_dtype, partition.data_chunks_, *buffer));
-    return true;
-  });
+        ARROW_ASSIGN_OR_RAISE(auto buffer,
+                              ExtractBufferOrCopyValues(flat_array, casa_dtype));
+        ARROW_RETURN_NOT_OK(
+            WriteChunks(tp, column, casa_dtype, partition.data_chunks_, *buffer));
+        return true;
+      },
+      cost);
 }
 
 }  // namespace detail

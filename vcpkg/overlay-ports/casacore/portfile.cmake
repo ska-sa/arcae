@@ -15,6 +15,7 @@ vcpkg_from_github(
         007-quiet-ms-keyword-logging.patch
         008-disable-rethrow-macro.patch
         009-jsonout-public-put-record.patch
+        010-jsonout-round-trip-floats.patch
 )
 
 vcpkg_find_acquire_program(FLEX)

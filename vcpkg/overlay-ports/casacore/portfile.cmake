@@ -9,6 +9,12 @@ vcpkg_from_github(
         001-casacore-cmake.patch
         002-json-parser-mutex.patch
         003-dysco-rows-per-block.patch
+        004-thread-local-table-cache.patch
+        005-refrows-move-constructor.patch
+        006-tableproxy-nolock-option.patch
+        007-quiet-ms-keyword-logging.patch
+        008-disable-rethrow-macro.patch
+        009-jsonout-public-put-record.patch
 )
 
 vcpkg_find_acquire_program(FLEX)

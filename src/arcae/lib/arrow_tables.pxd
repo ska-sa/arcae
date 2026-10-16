@@ -58,6 +58,15 @@ cdef extern from "arcae/descriptor.h" namespace "arcae" nogil:
         const string & table, bool complete) except +
 
 
+cdef extern from "arcae/isolated_table_proxy.h" namespace "arcae::detail" nogil:
+    cdef struct CInstanceStats" arcae::detail::InstanceStatsSnapshot":
+        int64_t submitted
+        int64_t completed
+        int64_t wait_ns
+        int64_t busy_ns
+        int64_t io_bytes
+
+
 cdef extern from "arcae/new_table_proxy.h" namespace "arcae" nogil:
     cdef cppclass CCasaTable" arcae::NewTableProxy":
         @staticmethod
@@ -101,6 +110,8 @@ cdef extern from "arcae/new_table_proxy.h" namespace "arcae" nogil:
         CResult[bool] RemoveKeyword " NewTableProxy::RemoveKeyword"(
             const string & keyword,
             const string & column) except +
+        vector[CInstanceStats] GetInstanceStats " NewTableProxy::GetInstanceStats"(
+            ) except +
 
 
 cdef extern from "arcae/table_factory.h" namespace "arcae" nogil:

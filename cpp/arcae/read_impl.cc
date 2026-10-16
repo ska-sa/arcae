@@ -171,6 +171,7 @@ Status ReadChunks(const TableProxy& tp, const std::string& column_name,
       } else {
         CopyChunkArray<CT>(chunk, ReadChunkArray<CT>(tp, column_name, chunk), buffer);
       }
+      RecordIoBytes(chunk.nElements() * sizeof(CT));
     }
     return Status::OK();
   });
@@ -378,44 +379,56 @@ Future<std::shared_ptr<Array>> ReadImpl(const std::shared_ptr<IsolatedTableProxy
   };
 
   auto fan_out = itp->nInstances() > 1;
+  // Split the rows of large reads so that they can be spread over the instances.
+  // Callers issuing many concurrent requests already keep the instances busy,
+  // and splitting their requests only adds hand-offs: requests of a few MB
+  // read up to a quarter slower when split into pieces of about 1 MB
+  constexpr std::size_t kMinSplitBytes = 8 * 1024 * 1024;
+  auto row_split = RowSplitOptions{itp->nInstances(), kMinSplitBytes};
 
-  auto part_fut = itp->RunAsync([column = column, selection = selection, result = result,
-                                 fan_out](const TableProxy& tp) mutable
-                                -> Result<PartitionResult> {
-    ARROW_RETURN_NOT_OK(ColumnExists(tp.table(), column));
-    auto table_column = TableColumn(tp.table(), column);
+  auto part_fut =
+      itp->RunAsync([column = column, selection = selection, result = result, fan_out,
+                     row_split](const TableProxy& tp) mutable -> Result<PartitionResult> {
+        ARROW_RETURN_NOT_OK(ColumnExists(tp.table(), column));
+        auto table_column = TableColumn(tp.table(), column);
 
-    // Get the shape of the result, given the supplied selection.
-    // If a result array is supplied we can derive ResultShapeData from it
-    // Also iterate over the selected rows and negate any missing rows as
-    // this elides reads in these cases.
-    // Otherwise the ResultShapeData must be derived wholly from
-    // the contents of the column
-    auto shape_data = std::make_shared<ResultShapeData>();
-    if (result) {
-      ARROW_ASSIGN_OR_RAISE(*shape_data,
-                            ResultShapeData::FromArray(table_column, result));
-      ARROW_ASSIGN_OR_RAISE(
-          selection, shape_data->NegateMissingSelectedRows(table_column, selection));
-    } else {
-      ARROW_ASSIGN_OR_RAISE(*shape_data,
-                            ResultShapeData::MakeRead(table_column, selection));
-    }
+        // Get the shape of the result, given the supplied selection.
+        // If a result array is supplied we can derive ResultShapeData from it
+        // Also iterate over the selected rows and negate any missing rows as
+        // this elides reads in these cases.
+        // Otherwise the ResultShapeData must be derived wholly from
+        // the contents of the column
+        auto shape_data = std::make_shared<ResultShapeData>();
+        if (result) {
+          ARROW_ASSIGN_OR_RAISE(*shape_data,
+                                ResultShapeData::FromArray(table_column, result));
+          ARROW_ASSIGN_OR_RAISE(
+              selection, shape_data->NegateMissingSelectedRows(table_column, selection));
+        } else {
+          ARROW_ASSIGN_OR_RAISE(*shape_data,
+                                ResultShapeData::MakeRead(table_column, selection));
+        }
 
-    ARROW_ASSIGN_OR_RAISE(auto partition, DataPartition::Make(selection, *shape_data));
-    auto shared_partition = std::make_shared<DataPartition>(std::move(partition));
-    if (fan_out && shared_partition->nChunks() > 1) {
-      return PartitionResult{std::move(shared_partition), std::move(shape_data), nullptr};
-    }
+        // Align splits to the column's tiles, read on this thread
+        if (row_split.max_splits > 1) {
+          row_split.unit_start = MakeRowUnitStart(tp.table(), column);
+        }
+        ARROW_ASSIGN_OR_RAISE(auto partition,
+                              DataPartition::Make(selection, *shape_data, row_split));
+        auto shared_partition = std::make_shared<DataPartition>(std::move(partition));
+        if (fan_out && shared_partition->nChunks() > 1) {
+          return PartitionResult{std::move(shared_partition), std::move(shape_data),
+                                 nullptr};
+        }
 
-    ARROW_ASSIGN_OR_RAISE(
-        auto buffer, GetResultBufferOrAllocate(shared_partition->nElements(),
+        ARROW_ASSIGN_OR_RAISE(auto buffer, GetResultBufferOrAllocate(
+                                               shared_partition->nElements(),
                                                shared_partition->GetDataType(), result));
-    ARROW_RETURN_NOT_OK(ReadChunks(tp, column, shared_partition->GetDataType(),
-                                   shared_partition->data_chunks_, *buffer));
-    ARROW_ASSIGN_OR_RAISE(auto array, MakeArray(*shape_data, buffer));
-    return PartitionResult{nullptr, nullptr, std::move(array)};
-  });
+        ARROW_RETURN_NOT_OK(ReadChunks(tp, column, shared_partition->GetDataType(),
+                                       shared_partition->data_chunks_, *buffer));
+        ARROW_ASSIGN_OR_RAISE(auto array, MakeArray(*shape_data, buffer));
+        return PartitionResult{nullptr, nullptr, std::move(array)};
+      });
 
   // Otherwise spread groups of chunks across the instances,
   // reading each group in a single task, then create an output array
@@ -431,17 +444,23 @@ Future<std::shared_ptr<Array>> ReadImpl(const std::shared_ptr<IsolatedTableProxy
         auto chunks = std::make_shared<std::vector<DataChunk>>(
             std::move(result.partition->TakeChunks()));
         auto ends = GroupChunks(*chunks, itp->nInstances());
+        ARROW_ASSIGN_OR_RAISE(auto dtype_size, CasaDataTypeSize(casa_dtype));
         std::vector<Future<bool>> reads;
         reads.reserve(ends.size());
 
         for (std::size_t g = 0, begin = 0; g < ends.size(); begin = ends[g++]) {
+          std::size_t nbytes = 0;
+          for (auto c = begin; c < ends[g]; ++c) {
+            nbytes += (*chunks)[c].nElements() * dtype_size;
+          }
           reads.push_back(itp->RunAsync(
               [column = column, casa_dtype, chunks = chunks, buffer = buffer,
                begin = begin, end = ends[g]](const TableProxy& tp) -> Result<bool> {
                 auto group = absl::MakeConstSpan(*chunks).subspan(begin, end - begin);
                 ARROW_RETURN_NOT_OK(ReadChunks(tp, column, casa_dtype, group, *buffer));
                 return true;
-              }));
+              },
+              CasaLockType::Read, std::int64_t(nbytes)));
         }
 
         // Make the array from the now populated buffer

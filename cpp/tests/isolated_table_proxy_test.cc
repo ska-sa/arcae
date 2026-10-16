@@ -24,6 +24,7 @@
 using ::arcae::GetArrayColumn;
 using ::arcae::detail::CasaLockType;
 using ::arcae::detail::IsolatedTableProxy;
+using ::arcae::detail::RecordIoBytes;
 
 using casacore::Array;
 using casacore::ArrayColumnDesc;
@@ -248,6 +249,175 @@ TEST_F(IsolatedTableProxyTest, SpawnCatchesExceptions) {
   ASSERT_OK_AND_ASSIGN(
       auto nrow, itp->RunSync([](const TableProxy& tp) { return tp.table().nrow(); }));
   EXPECT_EQ(nrow, knrow);
+}
+
+// Each instance counts the tasks dispatched to it,
+// the time they spend queued and running, and the I/O they record
+TEST_F(IsolatedTableProxyTest, InstanceStats) {
+  ASSERT_OK_AND_ASSIGN(auto itp, OpenTable());
+  auto stats = itp->GetInstanceStats();
+  ASSERT_EQ(stats.size(), 1);
+  EXPECT_EQ(stats[0].submitted, 0);
+  EXPECT_EQ(stats[0].completed, 0);
+
+  // I/O recorded outside of a task is not attributed to any instance
+  RecordIoBytes(1000);
+
+  ASSERT_OK(itp->RunSync([](TableProxy&) {
+    RecordIoBytes(16);
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    return true;
+  }));
+  ASSERT_OK(itp->RunAsync([](TableProxy&) {
+                 RecordIoBytes(32);
+                 return true;
+               })
+                .MoveResult());
+
+  // Tasks that throw are still measured
+  ASSERT_NOT_OK(itp->RunSync(
+      [](TableProxy&) -> bool { throw casacore::AipsError("measured failure"); }));
+
+  stats = itp->GetInstanceStats();
+  EXPECT_EQ(stats[0].submitted, 3);
+  EXPECT_EQ(stats[0].completed, 3);
+  EXPECT_EQ(stats[0].io_bytes, 48);
+  EXPECT_GE(stats[0].busy_ns, 5'000'000);
+  EXPECT_GE(stats[0].wait_ns, 0);
+}
+
+// Proxies spawned from a parent run on the parent's pools,
+// so they count against the parent's statistics
+TEST_F(IsolatedTableProxyTest, SpawnSharesInstanceStats) {
+  ASSERT_OK_AND_ASSIGN(auto itp, OpenTable());
+  ASSERT_OK_AND_ASSIGN(auto spawned, itp->Spawn([](const TableProxy& tp) {
+    return std::make_shared<TableProxy>(tp);
+  }));
+
+  ASSERT_OK(spawned->RunSync([](TableProxy&) {
+    RecordIoBytes(8);
+    return true;
+  }));
+
+  auto stats = itp->GetInstanceStats();
+  ASSERT_EQ(stats.size(), 1);
+  EXPECT_EQ(stats[0].completed, 1);
+  EXPECT_EQ(stats[0].io_bytes, 8);
+}
+
+// Work dispatched from an isolation thread may run on that thread's instance,
+// as the task dispatching it is about to complete. Otherwise it is queued
+// behind tasks on other instances, while its own instance becomes idle
+TEST_F(IsolatedTableProxyTest, DispatchFromIsolationThread) {
+  ASSERT_OK_AND_ASSIGN(auto itp, IsolatedTableProxy::Make(
+                                     [name = table_name_]() {
+                                       return std::make_shared<TableProxy>(name, Record(),
+                                                                           Table::Old);
+                                     },
+                                     2));
+
+  // Occupy the first instance until released
+  auto release = arrow::Future<>::Make();
+  auto blocked = itp->RunAsync([release](TableProxy&) {
+    release.Wait();
+    return true;
+  });
+
+  // Runs on the second instance, and dispatches further work from there
+  auto dispatched = std::make_shared<arrow::Future<bool>>();
+  ASSERT_OK(itp->RunSync([&itp, dispatched](TableProxy&) {
+    *dispatched = itp->RunAsync([](TableProxy&) { return true; });
+    return true;
+  }));
+
+  // The dispatched work completes while the first instance is still occupied
+  EXPECT_TRUE(dispatched->Wait(kTeardownTimeout))
+      << "Work dispatched from an isolation thread was queued on a busy instance";
+  release.MarkFinished();
+  ASSERT_OK(blocked.MoveResult());
+  ASSERT_OK(dispatched->MoveResult());
+}
+
+// Tasks are placed on the instance with the least outstanding I/O,
+// rather than the fewest tasks
+TEST_F(IsolatedTableProxyTest, PlaceByOutstandingCost) {
+  ASSERT_OK_AND_ASSIGN(auto itp, IsolatedTableProxy::Make(
+                                     [name = table_name_]() {
+                                       return std::make_shared<TableProxy>(name, Record(),
+                                                                           Table::Old);
+                                     },
+                                     2));
+
+  // Occupy the first instance with a large read, until released
+  constexpr std::int64_t kLargeCost = 100 * 1024 * 1024;
+  auto release = arrow::Future<>::Make();
+  auto large = itp->RunAsync(
+      [release](TableProxy&) {
+        release.Wait();
+        return true;
+      },
+      CasaLockType::Read, kLargeCost);
+
+  // Small tasks all go to the second instance, although after the first of
+  // them it has as many outstanding tasks as the first instance.
+  // They stay outstanding until released, so placement doesn't depend on timing
+  auto release_small = arrow::Future<>::Make();
+  std::vector<arrow::Future<bool>> small;
+  for (int i = 0; i < 3; ++i) {
+    small.push_back(itp->RunAsync([release_small](TableProxy&) {
+      release_small.Wait();
+      return true;
+    }));
+  }
+  auto stats = itp->GetInstanceStats();
+  EXPECT_EQ(stats[0].submitted, 1);
+  EXPECT_EQ(stats[1].submitted, 3);
+
+  release_small.MarkFinished();
+  release.MarkFinished();
+  for (auto& f : small) ASSERT_OK(f.MoveResult());
+  ASSERT_OK(large.MoveResult());
+
+  // Completed tasks release their reservations, so two outstanding tasks
+  // go to different instances. A leaked reservation would place both on one
+  auto release_pair = arrow::Future<>::Make();
+  std::vector<arrow::Future<bool>> pair;
+  for (int i = 0; i < 2; ++i) {
+    pair.push_back(itp->RunAsync([release_pair](TableProxy&) {
+      release_pair.Wait();
+      return true;
+    }));
+  }
+  stats = itp->GetInstanceStats();
+  EXPECT_EQ(stats[0].submitted, 2);
+  EXPECT_EQ(stats[1].submitted, 4);
+  release_pair.MarkFinished();
+  for (auto& f : pair) ASSERT_OK(f.MoveResult());
+}
+
+// Close() closes each instance's table on its isolation thread. Tasks
+// dispatched while it waits for that are queued behind the close, and must
+// fail rather than run against the closed table, which casacore doesn't
+// guard against
+TEST_F(IsolatedTableProxyTest, DispatchDuringClose) {
+  ASSERT_OK_AND_ASSIGN(auto itp, OpenTable());
+
+  // Close() lets each instance go idle before closing it, so a task dispatched
+  // from another thread while it waits runs before the close. A task can only
+  // be queued behind the close on an instance closed from its own isolation
+  // thread: dispatch from the closing task, then close the table inline.
+  // No lock: the task closes the table, so there is nothing left to unlock
+  auto late = std::make_shared<arrow::Future<casacore::rownr_t>>();
+  ASSERT_OK(itp->RunSync(
+      [itp, late](const TableProxy&) -> arrow::Result<bool> {
+        // Dispatched before the close, so it passes CheckClosed()
+        *late = itp->RunAsync([](TableProxy& tp) { return tp.table().nrow(); });
+        return itp->Close();
+      },
+      CasaLockType::None));
+  ASSERT_TRUE(itp->IsClosed());
+  EXPECT_RAISES_WITH_MESSAGE_THAT(Invalid, ::testing::HasSubstr("closed"),
+                                  late->MoveResult());
 }
 
 }  // namespace

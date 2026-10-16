@@ -1,0 +1,55 @@
+diff --git a/tables/Tables/RefRows.cc b/tables/Tables/RefRows.cc
+index 957b3e1..0d57066 100644
+--- a/tables/Tables/RefRows.cc
++++ b/tables/Tables/RefRows.cc
+@@ -38,17 +38,24 @@ RefRows::RefRows (const Vector<rownr_t>& rowNumbers, Bool isSliced,
+   init (rowNumbers, isSliced, collapse);
+ }
+ 
++RefRows::RefRows (Vector<rownr_t>&& rowNumbers, Bool isSliced,
++		  Bool collapse)
++{
++  init (std::move(rowNumbers), isSliced, collapse);
++}
++
++
+ RefRows::RefRows (const Vector<uInt>& rowNumbers, Bool isSliced,
+ 		  Bool collapse)
+ {
+   init (RowNumbers(rowNumbers), isSliced, collapse);
+ }
+   
+-void RefRows::init (const Vector<rownr_t>& rowNumbers, Bool isSliced,
++void RefRows::init (Vector<rownr_t> rowNumbers, Bool isSliced,
+                     Bool collapse)
+ {
+-  itsRows   = rowNumbers;
+-  itsNrows  = rowNumbers.nelements();
++  itsRows   = std::move(rowNumbers);
++  itsNrows  = itsRows.nelements();
+   itsSliced = isSliced;
+     if (itsSliced) {
+ 	AlwaysAssert (itsNrows%3 == 0, AipsError);
+diff --git a/tables/Tables/RefRows.h b/tables/Tables/RefRows.h
+index 32ab695..f1f738e 100644
+--- a/tables/Tables/RefRows.h
++++ b/tables/Tables/RefRows.h
+@@ -92,6 +92,9 @@ public:
+     // individual row numbers to the slice form (to save memory).
+     RefRows (const Vector<rownr_t>& rowNumbers, Bool isSliced = False,
+              Bool collapse = False);
++
++    RefRows (Vector<rownr_t>&& rowNumbers, Bool isSliced = False,
++             Bool collapse = False);
+ #ifdef IMPLICIT_CTDS_32BIT
+     RefRows (const Vector<uInt>& rowNumbers, Bool isSliced = False,
+              Bool collapse = False);
+@@ -148,7 +151,7 @@ public:
+ 
+ private:
+     // Initialize the object.
+-    void init (const Vector<rownr_t>& rowNumbers, Bool isSliced,
++    void init (Vector<rownr_t> rowNumbers, Bool isSliced,
+                Bool collapse);
+ 
+     // Fill the itsNrows variable.

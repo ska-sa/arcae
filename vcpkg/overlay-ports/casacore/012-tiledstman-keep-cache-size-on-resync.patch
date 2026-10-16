@@ -1,0 +1,21 @@
+diff --git a/tables/DataMan/TiledStMan.cc b/tables/DataMan/TiledStMan.cc
+--- a/tables/DataMan/TiledStMan.cc
++++ b/tables/DataMan/TiledStMan.cc
+@@ -1164,10 +1164,16 @@
+       headerFile >> tmp;
+       persMaxCacheSize_p = tmp;
+     }
+-    maxCacheSize_p = persMaxCacheSize_p;
+     if (firstTime) {
++        // The size stored in the header is the initial in-memory size, but
++        // only on open. Table::resync() reaches readHeader too, and a cache
++        // size set at run time through setMaximumCacheSize has to survive
++        // it: a reader that resyncs to pick up another handle's writes
++        // would otherwise silently lose its cache bound the first time
++        // anybody wrote to the table.
++        maxCacheSize_p = persMaxCacheSize_p;
+ 	// Setup the various things (i.e. initialize other variables).
+ 	setup (extraNdim);
+     }
+     uInt nrdim;
+     headerFile >> nrdim;

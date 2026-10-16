@@ -15,6 +15,7 @@
 #include <arrow/status.h>
 #include <arrow/type.h>
 #include <arrow/type_fwd.h>
+#include <arrow/util/byte_size.h>
 #include <arrow/util/future.h>
 #include <arrow/util/logging.h>
 
@@ -155,6 +156,7 @@ Status WriteChunks(const TableProxy& tp, const std::string& column_name,
       } else {
         WriteChunkArray<CT>(tp, column_name, chunk, GatherChunkArray<CT>(chunk, buffer));
       }
+      RecordIoBytes(chunk.nElements() * sizeof(CT));
     }
     return Status::OK();
   });
@@ -243,6 +245,7 @@ Future<bool> WriteImpl(const std::shared_ptr<IsolatedTableProxy>& itp,
   // Writes always use a single instance, so derive the shape of the input data,
   // partition it into contiguous chunks and write them in the same task:
   // each hand-off between threads costs more than writing a small column
+  auto cost = std::int64_t(arrow::util::TotalBufferSize(*data));
   return itp->RunAsync(
       [column = column, selection = selection,
        data = data](TableProxy& tp) -> Result<bool> {
@@ -269,7 +272,7 @@ Future<bool> WriteImpl(const std::shared_ptr<IsolatedTableProxy>& itp,
             WriteChunks(tp, column, casa_dtype, partition.data_chunks_, *buffer));
         return true;
       },
-      LockType::Write);
+      LockType::Write, cost);
 }
 
 }  // namespace detail

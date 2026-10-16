@@ -2,6 +2,8 @@
 #define ARCAE_DATA_PARTITION_H
 
 #include <cassert>
+#include <functional>
+#include <string>
 #include <vector>
 
 #include <absl/types/span.h>
@@ -11,6 +13,7 @@
 #include <casacore/casa/Arrays/IPosition.h>
 #include <casacore/casa/Utilities/DataType.h>
 #include <casacore/tables/Tables/RefRows.h>
+#include <casacore/tables/Tables/Table.h>
 
 #include "arcae/result_shape.h"
 #include "arcae/selection.h"
@@ -201,6 +204,29 @@ struct DataChunk {
   std::string ToString() const;
 };
 
+// Returns the first row of the storage unit (a band of tiles, say) holding a row
+using RowUnitStart = std::function<casacore::rownr_t(casacore::rownr_t)>;
+
+// Returns a RowUnitStart for the column's storage manager, or an empty
+// function if its rows are not stored in units worth aligning to.
+// The function refers to the table's storage manager, so both must only
+// be called while the table is open, on the thread that owns the table
+RowUnitStart MakeRowUnitStart(const casacore::Table& table, const std::string& column);
+
+// Controls splitting the selected rows of a fixed shape result into chunks,
+// so that a large read can be spread over several table instances
+struct RowSplitOptions {
+  // Split the rows into at most this many chunks
+  std::size_t max_splits = 1;
+  // Don't split the rows into chunks smaller than this many bytes.
+  // Rows are split into equally sized chunks
+  std::size_t min_bytes = 0;
+  // If set, chunk boundaries move to the nearest start of a storage unit,
+  // so that no unit is read by two chunks. Chunks are then unequal in size,
+  // and a unit larger than a chunk merges chunks
+  RowUnitStart unit_start = {};
+};
+
 // A DataPartition is a mapping between indices on disk
 // and indices in memory. The partition is split into
 // multiple chunks, where each chunk represents a contiguous
@@ -209,8 +235,10 @@ struct DataPartition {
   // Construct a DataPartition from a selection object describing indices of
   // data within a column on disk and a result_shape object describing the
   // layout of the source/destination of data within memory.
+  // Rows of a fixed shape result are split into chunks according to row_split.
   static arrow::Result<DataPartition> Make(const Selection& selection,
-                                           const ResultShapeData& result_shape);
+                                           const ResultShapeData& result_shape,
+                                           const RowSplitOptions& row_split = {});
 
   std::vector<DataChunk> data_chunks_;
   casacore::DataType casa_dtype_;

@@ -1,0 +1,16 @@
+diff --git a/ms/MeasurementSets/MSTableImpl.cc b/ms/MeasurementSets/MSTableImpl.cc
+index a5d3c4d..bb73504 100644
+--- a/ms/MeasurementSets/MSTableImpl.cc
++++ b/ms/MeasurementSets/MSTableImpl.cc
+@@ -321,9 +321,10 @@ void MSTableImpl::addKeyToDesc(TableDesc& td, const String& keyName,
+ //#	    keywordStandardComment(key);
+ 	break; 
+     default:
+-      cerr << "Data type: "<< keyDType << ", "<< keyName<< "not handled"<<endl;
++      // cerr << "Data type: "<< keyDType << ", "<< keyName<< "not handled"<<endl;
+       //	throw(AipsError ("MSTableImpl::addKeyToDesc(...) - "
+       //			 "Data type not handled"));
++			break;
+     }  
+ }
+ 

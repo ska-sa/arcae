@@ -81,22 +81,33 @@ collecting the resulting proxies into a `ProxyAndPool` vector. `reopen` is the
 recipe for opening an instance again later (§6). `ninstances` is surfaced all the
 way up to the Python entry point `arcae.table(filename, ninstances=...)`.
 
-Operations are dispatched onto an instance through three templated entry points:
+Operations are dispatched onto an instance through two templated entry points:
 
-- `RunAsync(fn, lock_type)` → returns an `arrow::Future`.
-- `RunSync(fn, lock_type)` → runs and waits for the result.
-- `Then(future, fn, lock_type)` → chains a continuation onto a prior future.
+- `RunAsync(fn, lock_type, cost)` → returns an `arrow::Future`.
+- `RunSync(fn, lock_type, cost)` → runs and waits for the result.
+
+`lock_type` comes before `cost` on purpose. `FileLocker::LockType` is an unscoped
+enum and converts implicitly to an integer, so a cost-first signature would accept
+`RunAsync(fn, LockType::Write)` as a cost of 1 under a read lock.
 
 Each dispatch:
 
-1. picks an instance,
+1. picks an instance (§3), reserving the functor's estimated I/O on it,
 2. submits the functor to that instance's single thread,
-3. locks the instance through `LockInstance`, which wraps a
+3. fails with `Status::Invalid("TableProxy is closed")` if the instance's table
+   has been closed (see below),
+4. locks the instance through `LockInstance`, which wraps a
    `MaybeLockAndFinalise` guard (see §4) and replaces an instance that has
    fallen out of date (see §6),
-4. invokes the functor with the instance's `TableProxy&`,
-5. converts any `casacore::AipsError` into an `arrow::Status` so exceptions never
+5. invokes the functor with the instance's `TableProxy&`,
+6. converts any `casacore::AipsError` into an `arrow::Status` so exceptions never
    escape a pool thread.
+
+`Close()` closes each instance's table on its isolation thread, and only marks
+the ITP closed once every instance has closed. Tasks dispatched in between pass
+`CheckClosed()` and are queued behind the close. casacore answers some queries
+on a closed table instead of failing them (`nrow()` returns zero), so step 3
+checks the table on the isolation thread itself, which cannot race the close.
 
 Dispatch lambdas capture `weak_from_this()` (not raw `this`); the task re-locks
 the weak pointer at start and bails with `Status::Invalid("TableProxy is closed")`
@@ -113,21 +124,66 @@ is what a derived instance is rebuilt over (§6).
 
 ## 3. Multiplexing I/O across instances (read fan-out)
 
-Reads are spread across all `N` instances. `GetInstance()`
-(`isolated_table_proxy.cc`) selects the **least-loaded** instance by querying each
-pool's pending task count and returning the one with the fewest:
+### Choosing an instance
 
-```cpp
-for (std::size_t i = 0; i < proxy_pools_.size(); ++i) {
-  const auto pool_tasks = proxy_pools_[i].io_pool_->GetNumTasks();
-  if (pool_tasks < num_tasks) { instance = i; num_tasks = pool_tasks; }
-}
-```
+Each dispatch carries an estimate of its I/O in bytes (`RunAsync(fn, cost)`):
+the size of each group of chunks for reads, the size of the input array for
+writes, and a nominal `kDefaultTaskCost` of 1 MiB otherwise (metadata, and
+partitioning a read, which may read a small column itself). `Dispatch(cost)`
+(`isolated_table_proxy.cc`) picks the instance with the **least outstanding
+cost** and reserves the cost on it. The task releases the reservation when it
+completes, before its future's continuations run. Notes:
 
-A single high-level read is decomposed into many independent chunk reads, each
-dispatched via `RunAsync`/`Then` with `lock_type = Read`, and those chunks fan out
-across the instances — this is the **multi-reader** parallelism. The decomposition
-machinery lives alongside the ITP:
+- **Bytes, not task counts.** Task counts cannot tell a metadata lookup from a
+  50 MB read, and queued pieces of a large read were placed behind other
+  columns' reads.
+- **The dispatching task is discounted.** The reads following a partition are
+  dispatched from the partitioning instance's own thread. That instance is about
+  to become free, so the cost of a task running on the calling thread is
+  discounted.
+- **Ties go to instance 0.** This keeps successive calls on an idle proxy on one
+  instance, whose casacore caches are warm. Rotating ties was measured, and
+  slowed sequential 100-row reads by about a quarter with no gain for
+  concurrent reads.
+- **Statistics.** Reservations live in each instance's `InstanceStats`, together
+  with cumulative counts of tasks, queue wait, busy time and bytes read or
+  written. Proxies spawned from a parent share these, as they share its pools.
+  `Table._instance_stats()` exposes them for benchmarking
+  (`benchmarks/instance_balance.py`).
+
+### Splitting reads
+
+A single high-level read is decomposed into independent chunk reads, which are
+grouped and spread over the instances: the **multi-reader** parallelism. With one
+instance, the partitioning task reads the chunks itself, avoiding a hand-off.
+
+The row dimension of a fixed-shape selection is a single `casacore::RefRows`,
+gaps included, so it would otherwise always form one chunk.
+`DataPartition::Make` therefore takes `RowSplitOptions`, splitting the selected
+rows into at most one piece per instance, of equal size and each at least
+8 MiB. Smaller requests are read whole: callers issuing many concurrent requests
+already keep the instances busy, and splitting their requests only adds
+hand-offs between threads.
+
+Pieces are cut where the column's storage manager starts a new unit of rows:
+a band of tiles of `TiledColumnStMan`, `TiledShapeStMan` and `TiledDataStMan`,
+or a timestep block of `DyscoStMan`. A band holds the rows in one tile along
+the last hypercube axis. It spans any other row axes of a `TiledDataStMan`
+hypercube, which steps rows through, say, baselines before times. Instances read and decode whole units, so a cut through a unit
+would read it on two instances: with tiles of 1024 rows, pieces of 1 MiB cut
+mid-tile read twice the bytes of the column, and 8 MiB pieces read up to half
+as much again with 4096-row tiles. `MakeRowUnitStart` finds a row's unit
+start, on the instance's thread in the partitioning task, and each even
+boundary moves to the nearer start, merging pieces smaller than a unit.
+Dysco's block size comes from the overlay port's
+`003-dysco-rows-per-block.patch`, as `DyscoStMan` doesn't otherwise publish it.
+Other storage managers, and reference tables, keep the even boundaries:
+`TiledCellStMan` stores each row in its own hypercube, `StandardStMan`
+buckets are small, and `StManAipsIO` holds whole columns in memory. Missing (negative) rows stay in chunks of their own. Variably-shaped columns already
+form one chunk per row. `GroupChunks` then groups the chunks into one group per
+instance, with similar numbers of elements.
+
+The decomposition machinery lives alongside the ITP:
 
 - `selection.{h}` — the row/column index selection requested by the caller.
 - `data_partition.{h,cc}` — splits a selection into per-chunk work items.
@@ -208,14 +264,16 @@ borrowed `proxy_pools_`/`dependencies_` and marks itself closed *before* deletio
 so tearing down the borrowed writer never double-flushes or double-closes the
 shared instance-0 proxy. It shares instance 0's `ProxySlot` rather than copying
 the proxy, and carries the parent's refresh recipe, so it both sees and can make
-a replacement of that instance. The actual write logic lives in
+a replacement of that instance. It shares instance 0's `InstanceStats` too, so
+the cost of pending writes counts towards instance 0's load and readers dispatch
+(§3) around it. The actual write logic lives in
 `write_impl.{h,cc}`.
 
 This yields the overall concurrency model:
 
 | Workload | Routing | Lock |
 |----------|---------|------|
-| Reads | least-loaded of `N` instances (fan-out) | `Read` (shared) |
+| Reads | least outstanding I/O of `N` instances (fan-out) | `Read` (shared) |
 | Writes | instance 0 only (serialised) | `Write` (exclusive) |
 | Structural changes (`AddColumns`) | instance 0, then every other instance is reopened (§6) | `Write`, released before reopening |
 

@@ -1,0 +1,26 @@
+diff --git a/tables/Tables/PlainTable.cc b/tables/Tables/PlainTable.cc
+index f8f7653..fe1c079 100644
+--- a/tables/Tables/PlainTable.cc
++++ b/tables/Tables/PlainTable.cc
+@@ -45,7 +45,7 @@
+ namespace casacore { //# NAMESPACE CASACORE - BEGIN
+ 
+ //# Initialize the static TableCache object.
+-TableCache PlainTable::theirTableCache;
++thread_local TableCache PlainTable::theirTableCache;
+ 
+ PlainTable::PlainTable (SetupNewTable& newtab, rownr_t nrrow, Bool initialize,
+                         const TableLock& lockOptions, int endianFormat,
+diff --git a/tables/Tables/PlainTable.h b/tables/Tables/PlainTable.h
+index 5742020..c5c5f8e 100644
+--- a/tables/Tables/PlainTable.h
++++ b/tables/Tables/PlainTable.h
+@@ -316,7 +316,7 @@ private:
+     TSMOption      tsmOption_p;
+     Bool           changeTiledDataOnly_; //# Allow updates to data in existing tiled columns
+     //# cache of open (plain) tables
+-    static TableCache theirTableCache;
++    static thread_local TableCache theirTableCache;
+ };
+ 
+ 

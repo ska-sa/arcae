@@ -1,0 +1,27 @@
+diff --git a/tables/Tables/TableProxy.h b/tables/Tables/TableProxy.h
+--- a/tables/Tables/TableProxy.h
++++ b/tables/Tables/TableProxy.h
+@@ -198,7 +198,7 @@ public:
+   String endianFormat() const;
+ 
+   // Acquire a (read or write) lock on the table.
+-  void lock (Bool mode, Int nattempts);
++  Bool lock (Bool mode, Int nattempts);
+ 
+   // Release a lock on the table.
+   void unlock();
+diff --git a/tables/Tables/TableProxy.cc b/tables/Tables/TableProxy.cc
+--- a/tables/Tables/TableProxy.cc
++++ b/tables/Tables/TableProxy.cc
+@@ -224,9 +224,9 @@ String TableProxy::endianFormat() const
+   return "little";
+ }
+ 
+-void TableProxy::lock (Bool mode, Int nattempts)
++Bool TableProxy::lock (Bool mode, Int nattempts)
+ {
+-  table_p.lock (mode, nattempts);
++  return table_p.lock (mode, nattempts);
+ }
+ 
+ void TableProxy::unlock()

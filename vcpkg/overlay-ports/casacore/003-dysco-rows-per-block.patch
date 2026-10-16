@@ -1,0 +1,13 @@
+diff --git a/tables/Dysco/dyscostman.cc b/tables/Dysco/dyscostman.cc
+--- a/tables/Dysco/dyscostman.cc
++++ b/tables/Dysco/dyscostman.cc
+@@ -152,6 +152,9 @@
+   spec.define("normalization", normStr);
+   spec.define("studentTNu", _studentTNu);
+   spec.define("distributionTruncation", _distributionTruncation);
++  // Rows are compressed in blocks of this many rows, each a single timestep.
++  // Zero until the first block is written. setFromSpec ignores it
++  spec.define("rowsPerBlock", casacore::uInt(_rowsPerBlock));
+   return spec;
+ }
+ 

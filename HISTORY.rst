@@ -4,6 +4,9 @@ History
 
 X.Y.Z (DD-MM-YYYY)
 ------------------
+* Split large reads at tile and Dysco block boundaries, so that no tile is
+  read by two table instances, which read up to half as much data again with
+  large tiles (:pr:`261`)
 * Spread large reads of fixed shape columns over table instances, which
   previously ran on a single instance: reading a full column with 8 instances
   takes 30-45% of the time it did (:pr:`260`)

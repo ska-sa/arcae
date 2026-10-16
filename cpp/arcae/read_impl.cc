@@ -409,6 +409,10 @@ Future<std::shared_ptr<Array>> ReadImpl(const std::shared_ptr<IsolatedTableProxy
                                 ResultShapeData::MakeRead(table_column, selection));
         }
 
+        // Align splits to the column's tiles, read on this thread
+        if (row_split.max_splits > 1) {
+          row_split.unit_start = MakeRowUnitStart(tp.table(), column);
+        }
         ARROW_ASSIGN_OR_RAISE(auto partition,
                               DataPartition::Make(selection, *shape_data, row_split));
         auto shared_partition = std::make_shared<DataPartition>(std::move(partition));

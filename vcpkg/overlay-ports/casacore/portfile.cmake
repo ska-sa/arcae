@@ -8,6 +8,7 @@ vcpkg_from_github(
     PATCHES
         001-casacore-cmake.patch
         002-json-parser-mutex.patch
+        003-dysco-rows-per-block.patch
 )
 
 vcpkg_find_acquire_program(FLEX)

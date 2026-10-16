@@ -147,8 +147,21 @@ gaps included, so it would otherwise always form one chunk.
 rows into at most one piece per instance, of equal size and each at least
 8 MiB. Smaller requests are read whole: callers issuing many concurrent requests
 already keep the instances busy, and splitting their requests only adds
-hand-offs between threads. Missing
-(negative) rows stay in chunks of their own. Variably-shaped columns already
+hand-offs between threads.
+
+Pieces are cut where the column's storage manager starts a new unit of rows:
+a tile of `TiledColumnStMan` and `TiledShapeStMan`, or a timestep block of
+`DyscoStMan`. Instances read and decode whole units, so a cut through a unit
+would read it on two instances: with tiles of 1024 rows, pieces of 1 MiB cut
+mid-tile read twice the bytes of the column, and 8 MiB pieces read up to half
+as much again with 4096-row tiles. `MakeRowUnitStart` finds a row's unit
+start, on the instance's thread in the partitioning task, and each even
+boundary moves to the nearer start, merging pieces smaller than a unit.
+Dysco's block size comes from the overlay port's
+`003-dysco-rows-per-block.patch`, as `DyscoStMan` doesn't otherwise publish it.
+Other storage managers, and reference tables, keep the even boundaries:
+`StandardStMan` buckets are small, and `StManAipsIO` holds whole columns in
+memory. Missing (negative) rows stay in chunks of their own. Variably-shaped columns already
 form one chunk per row. `GroupChunks` then groups the chunks into one group per
 instance, with similar numbers of elements.
 

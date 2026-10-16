@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <exception>
 #include <iterator>
 #include <map>
 #include <memory>
@@ -10,6 +11,9 @@
 #include <casacore/casa/Arrays/IPosition.h>
 #include <casacore/casa/Arrays/Slicer.h>
 #include <casacore/casa/aipsxtype.h>
+#include <casacore/tables/DataMan/DataManager.h>
+#include <casacore/tables/DataMan/TSMCube.h>
+#include <casacore/tables/DataMan/TiledStMan.h>
 #include <casacore/tables/Tables/RefRows.h>
 
 #include <arrow/result.h>
@@ -120,29 +124,85 @@ Result<std::vector<SpanPair>> MakeSubSpans(const IndexSpan& disk_span,
   return result;
 }
 
-// Split the nrows rows read from disk, over all spans, into nsplits pieces
-// of consecutive rows, whose sizes differ by at most one row. Spans of
-// missing (negative) rows are not split. A piece spanning two spans is split
-// at their boundary, as the spans are separate chunks anyway
+// Moves the boundary before position p, among the rows read from disk,
+// to the nearer of the starts of the storage unit holding the row at p,
+// and of the unit that follows it. row_at gives the disk row at a position
+template <typename RowAt>
+std::size_t AlignBoundary(std::size_t p, std::size_t nrows, const RowAt& row_at,
+                          const RowUnitStart& unit_start) {
+  auto row = rownr_t(row_at(p));
+  auto unit = unit_start(row);
+  if (unit == row) return p;
+  // Rows read from disk ascend, and so do the starts of their units.
+  // The first position whose row is in or after the unit
+  std::size_t lo = 0, hi = p;
+  while (lo < hi) {
+    auto mid = lo + (hi - lo) / 2;
+    if (rownr_t(row_at(mid)) < unit)
+      lo = mid + 1;
+    else
+      hi = mid;
+  }
+  auto down = lo;
+  // The first position whose row is in a later unit
+  lo = p + 1, hi = nrows;
+  while (lo < hi) {
+    auto mid = lo + (hi - lo) / 2;
+    if (unit_start(rownr_t(row_at(mid))) == unit)
+      lo = mid + 1;
+    else
+      hi = mid;
+  }
+  return p - down <= lo - p ? down : lo;
+}
+
+// Split the nrows rows read from disk, over all spans, into at most nsplits
+// pieces of consecutive rows, whose sizes differ by at most one row unless
+// unit_start moves their boundaries. Spans of missing (negative) rows are
+// not split. A piece spanning two spans is split at their boundary,
+// as the spans are separate chunks anyway
 std::vector<SpanPair> SplitRowSpans(std::vector<SpanPair>&& spans, std::size_t nrows,
-                                    std::size_t nsplits) {
+                                    std::size_t nsplits, const RowUnitStart& unit_start) {
   assert(nsplits > 0 && nsplits <= nrows);
+  // The spans of rows read from disk, and the position of the first row of each
+  std::vector<IndexSpan> read;
+  std::vector<std::size_t> read_starts;
+  for (std::size_t start = 0; const auto& span : spans) {
+    if (span.disk.size() == 0 || span.disk[0] < 0) continue;
+    read.push_back(span.disk);
+    read_starts.push_back(start);
+    start += span.disk.size();
+  }
+  auto row_at = [&](std::size_t p) {
+    auto s = std::upper_bound(read_starts.begin(), read_starts.end(), p) -
+             read_starts.begin() - 1;
+    return read[s][p - read_starts[s]];
+  };
+
+  // The position after the last row of each piece
+  std::vector<std::size_t> ends;
+  for (std::size_t split = 1; split < nsplits; ++split) {
+    auto end = split * nrows / nsplits;
+    if (unit_start) end = AlignBoundary(end, nrows, row_at, unit_start);
+    if (end > (ends.empty() ? 0 : ends.back()) && end < nrows) ends.push_back(end);
+  }
+  ends.push_back(nrows);
+
   std::vector<SpanPair> result;
-  // Rows read from disk before the current span, and the current split
+  // Rows read from disk before the current span, and the current piece
   std::size_t position = 0;
-  std::size_t split = 1;
+  std::size_t piece = 0;
   for (auto& [disk, mem] : spans) {
     if (disk.size() == 0 || disk[0] < 0) {
       result.push_back({std::move(disk), std::move(mem)});
       continue;
     }
     for (std::size_t start = 0; start < disk.size();) {
-      auto split_end = split * nrows / nsplits;
-      auto n = std::min(disk.size() - start, split_end - position);
+      auto n = std::min(disk.size() - start, ends[piece] - position);
       result.push_back({disk.subspan(start, n), mem.subspan(start, n)});
       start += n;
       position += n;
-      if (position == split_end) ++split;
+      if (position == ends[piece]) ++piece;
     }
   }
   return result;
@@ -521,8 +581,8 @@ Result<DataPartition> DataPartition::Make(const Selection& selection,
       }
       nsplits = std::min(nsplits, nrows);
       if (nsplits > 1) {
-        dim_subspans[row_dim] =
-            SplitRowSpans(std::move(dim_subspans[row_dim]), nrows, nsplits);
+        dim_subspans[row_dim] = SplitRowSpans(std::move(dim_subspans[row_dim]), nrows,
+                                              nsplits, row_split.unit_start);
       }
     }
 
@@ -585,6 +645,47 @@ Result<DataPartition> DataPartition::Make(const Selection& selection,
                                        std::move(id_cache), result_shape));
 
   return DataPartition{std::move(chunks), result_shape.GetDataType()};
+}
+
+RowUnitStart MakeRowUnitStart(const casacore::Table& table, const std::string& column) {
+  // Selections and reference tables number rows differently from storage managers
+  if (!table.isRootTable()) return {};
+  try {
+    auto* dm = table.findDataManager(column, /*byColumn=*/true);
+    const auto type = dm->dataManagerType();
+
+    // The last axis of a TiledColumnStMan or TiledShapeStMan hypercube is
+    // its rows, and its tiles start at its first row. TiledDataStMan can map
+    // rows onto several axes, and TiledCellStMan stores each row on its own
+    if (type == "TiledColumnStMan" || type == "TiledShapeStMan") {
+      auto* tsm = dynamic_cast<casacore::TiledStMan*>(dm);
+      if (!tsm) return {};
+      return [tsm](rownr_t row) -> rownr_t {
+        IPosition position;  // Of the cell in its hypercube
+        const auto* cube = tsm->getHypercube(row, position);
+        const auto& tile_shape = cube->tileShape();
+        // Rows of a TiledShapeStMan that are not in a hypercube
+        if (position.empty() || tile_shape.empty() || tile_shape.last() <= 0) return row;
+        auto offset = rownr_t(position.last()) % rownr_t(tile_shape.last());
+        return offset <= row ? row - offset : row;
+      };
+    }
+
+    // Dysco compresses rows in blocks of one timestep, starting at row 0,
+    // and decodes a whole block to read any of its rows.
+    // The overlay port publishes the block size in the specification
+    if (type == "DyscoStMan") {
+      auto spec = dm->dataManagerSpec();
+      auto field = spec.fieldNumber("rowsPerBlock");
+      if (field < 0) return {};
+      auto rows = rownr_t(spec.asuInt(field));
+      if (rows <= 1) return {};
+      return [rows](rownr_t row) -> rownr_t { return row - row % rows; };
+    }
+  } catch (const std::exception&) {
+    // Splits are still correct without alignment
+  }
+  return {};
 }
 
 }  // namespace detail

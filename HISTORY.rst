@@ -4,12 +4,10 @@ History
 
 X.Y.Z (DD-MM-YYYY)
 ------------------
-* Split large reads at tile and Dysco block boundaries, so that no tile is
-  read by two table instances, which read up to half as much data again with
-  large tiles (:pr:`261`)
 * Spread large reads of fixed shape columns over table instances, which
   previously ran on a single instance: reading a full column with 8 instances
-  takes 30-45% of the time it did (:pr:`260`)
+  takes 30-45% of the time it did. Reads are split at tile and Dysco block
+  boundaries, so that no tile is read by two instances (:pr:`260`)
 * Place work on the table instance with the least outstanding I/O, rather than
   the fewest queued tasks (:pr:`260`)
 * Fix calls made while a table is closing running against the closed table,

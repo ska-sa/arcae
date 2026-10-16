@@ -4,6 +4,8 @@ History
 
 X.Y.Z (DD-MM-YYYY)
 ------------------
+* Split the casacore build patch into one patch per concern, and list
+  ``nolock`` as a valid lock option in casacore's error message (:pr:`263`)
 * Spread large reads of fixed shape columns over table instances, which
   previously ran on a single instance: reading a full column with 8 instances
   takes 30-45% of the time it did. Reads are split at tile and Dysco block

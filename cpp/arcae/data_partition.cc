@@ -7,6 +7,7 @@
 #include <map>
 #include <memory>
 #include <numeric>
+#include <ranges>
 
 #include <casacore/casa/Arrays/IPosition.h>
 #include <casacore/casa/Arrays/Slicer.h>
@@ -14,7 +15,9 @@
 #include <casacore/tables/DataMan/DataManager.h>
 #include <casacore/tables/DataMan/TSMCube.h>
 #include <casacore/tables/DataMan/TiledStMan.h>
+#include <casacore/tables/Tables/ColumnDesc.h>
 #include <casacore/tables/Tables/RefRows.h>
+#include <casacore/tables/Tables/TableColumn.h>
 
 #include <arrow/result.h>
 
@@ -135,25 +138,16 @@ std::size_t AlignBoundary(std::size_t p, std::size_t nrows, const RowAt& row_at,
   if (unit == row) return p;
   // Rows read from disk ascend, and so do the starts of their units.
   // The first position whose row is in or after the unit
-  std::size_t lo = 0, hi = p;
-  while (lo < hi) {
-    auto mid = lo + (hi - lo) / 2;
-    if (rownr_t(row_at(mid)) < unit)
-      lo = mid + 1;
-    else
-      hi = mid;
-  }
-  auto down = lo;
+  auto before = std::views::iota(std::size_t{0}, p);
+  auto first = std::ranges::lower_bound(before, unit, {},
+                                        [&](auto q) { return rownr_t(row_at(q)); });
+  auto down = first == before.end() ? p : *first;
   // The first position whose row is in a later unit
-  lo = p + 1, hi = nrows;
-  while (lo < hi) {
-    auto mid = lo + (hi - lo) / 2;
-    if (unit_start(rownr_t(row_at(mid))) == unit)
-      lo = mid + 1;
-    else
-      hi = mid;
-  }
-  return p - down <= lo - p ? down : lo;
+  auto after = std::views::iota(p + 1, nrows);
+  auto up = std::ranges::upper_bound(
+      after, unit, {}, [&](auto q) { return unit_start(rownr_t(row_at(q))); });
+  auto next = up == after.end() ? nrows : *up;
+  return p - down <= next - p ? down : next;
 }
 
 // Split the nrows rows read from disk, over all spans, into at most nsplits
@@ -654,19 +648,42 @@ RowUnitStart MakeRowUnitStart(const casacore::Table& table, const std::string& c
     auto* dm = table.findDataManager(column, /*byColumn=*/true);
     const auto type = dm->dataManagerType();
 
-    // The last axis of a TiledColumnStMan or TiledShapeStMan hypercube is
-    // its rows, and its tiles start at its first row. TiledDataStMan can map
-    // rows onto several axes, and TiledCellStMan stores each row on its own
-    if (type == "TiledColumnStMan" || type == "TiledShapeStMan") {
-      auto* tsm = dynamic_cast<casacore::TiledStMan*>(dm);
-      if (!tsm) return {};
-      return [tsm](rownr_t row) -> rownr_t {
+    // TiledCellStMan stores each row in its own hypercube, so rows share no tiles
+    if (type == "TiledCellStMan") return {};
+
+    // TiledColumnStMan, TiledShapeStMan and TiledDataStMan hypercubes hold
+    // cells in their leading axes and rows in the rest, stepping through the
+    // row axes fastest first. TiledDataStMan can have several row axes, the
+    // others have one. The rows in one band of tiles along the last axis hold
+    // whole tiles, as the band spans the other row axes, so bands are the units
+    if (auto* tsm = dynamic_cast<casacore::TiledStMan*>(dm)) {
+      auto cell_ndim = casacore::TableColumn(table, column).columnDesc().ndim();
+      // Variably shaped cells have one row axis, as only a TiledDataStMan
+      // has more, and its cells have a fixed number of dimensions
+      if (cell_ndim <= 0 && type == "TiledDataStMan") return {};
+      return [tsm, cell_ndim](rownr_t row) -> rownr_t {
         IPosition position;  // Of the cell in its hypercube
-        const auto* cube = tsm->getHypercube(row, position);
+        const casacore::TSMCube* cube = nullptr;
+        try {
+          cube = tsm->getHypercube(row, position);
+        } catch (const std::exception&) {
+          return row;  // A row in no hypercube
+        }
+        const auto& cube_shape = cube->cubeShape();
         const auto& tile_shape = cube->tileShape();
-        // Rows of a TiledShapeStMan that are not in a hypercube
-        if (position.empty() || tile_shape.empty() || tile_shape.last() <= 0) return row;
-        auto offset = rownr_t(position.last()) % rownr_t(tile_shape.last());
+        auto ndim = int(position.nelements());
+        auto first_row_axis = cell_ndim > 0 ? cell_ndim : ndim - 1;
+        // The dummy hypercube of TiledShapeStMan rows that have no hypercube
+        if (ndim <= first_row_axis || int(tile_shape.nelements()) != ndim ||
+            int(cube_shape.nelements()) != ndim) {
+          return row;
+        }
+        // The offset of the row in its band
+        auto last = ndim - 1;
+        auto offset = rownr_t(position[last] % tile_shape[last]);
+        for (auto d = last - 1; d >= first_row_axis; --d) {
+          offset = offset * cube_shape[d] + position[d];
+        }
         return offset <= row ? row - offset : row;
       };
     }

@@ -10,7 +10,10 @@
 #include <casacore/casa/Utilities/DataType.h>
 #include <casacore/tables/DataMan/DataManager.h>
 #include <casacore/tables/DataMan/StandardStMan.h>
+#include <casacore/tables/DataMan/TiledCellStMan.h>
 #include <casacore/tables/DataMan/TiledColumnStMan.h>
+#include <casacore/tables/DataMan/TiledDataStMan.h>
+#include <casacore/tables/DataMan/TiledDataStManAccessor.h>
 #include <casacore/tables/DataMan/TiledShapeStMan.h>
 #include <casacore/tables/Tables/ArrColDesc.h>
 #include <casacore/tables/Tables/ArrayColumn.h>
@@ -363,6 +366,30 @@ TEST_F(RowUnitStartTest, TiledShapeStMan) {
   EXPECT_EQ(unit_start(11), 10);
 }
 
+// TiledDataStMan can store rows in several axes of a hypercube. Here rows
+// step through 4 baselines, then 6 times, and tiles span 2 baselines and
+// 3 times, so rows 0-11 and rows 12-23 hold whole tiles
+TEST_F(RowUnitStartTest, TiledDataStMan) {
+  constexpr std::size_t kNBaseline = 4;
+  constexpr std::size_t kNTime = 6;
+  TableDesc td;
+  td.addColumn(ArrayColumnDesc<Complex>("DATA", IPosition{2}, ColumnDesc::FixedShape));
+  td.defineHypercolumn("TiledData", 3, casacore::Vector<casacore::String>{"DATA"});
+  SetupNewTable setup(Path("tdsm.table"), td, Table::New);
+  casacore::TiledDataStMan sm("TiledData");
+  setup.bindColumn("DATA", sm);
+  Table table(setup, kNBaseline * kNTime);
+  casacore::TiledDataStManAccessor accessor(table, "TiledData");
+  accessor.addHypercube(IPosition{2, kNBaseline, kNTime}, IPosition{2, 2, 3},
+                        casacore::Record());
+
+  auto unit_start = MakeRowUnitStart(table, "DATA");
+  ASSERT_TRUE(unit_start);
+  for (::casacore::rownr_t row = 0; row < kNBaseline * kNTime; ++row) {
+    EXPECT_EQ(unit_start(row), row < 12 ? 0 : 12) << row;
+  }
+}
+
 // Dysco compresses rows in blocks of one timestep
 TEST_F(RowUnitStartTest, DyscoStMan) {
   constexpr std::size_t kNAnt = 4;
@@ -426,15 +453,21 @@ TEST_F(RowUnitStartTest, Unaligned) {
   td.addColumn(ArrayColumnDesc<Complex>("DATA", IPosition{2, 3}, ColumnDesc::FixedShape));
   td.addColumn(
       ArrayColumnDesc<Complex>("TILED", IPosition{2, 3}, ColumnDesc::FixedShape));
+  td.addColumn(ArrayColumnDesc<Complex>("CELL", IPosition{2, 3}, ColumnDesc::FixedShape));
+  td.defineHypercolumn("TiledCell", 2, casacore::Vector<casacore::String>{"CELL"});
   SetupNewTable setup(Path("ssm.table"), td, Table::New);
   casacore::StandardStMan ssm;
   casacore::TiledColumnStMan tsm("TiledData", IPosition{2, 3, 4});
+  casacore::TiledCellStMan tcsm("TiledCell", IPosition{2, 3});
   setup.bindColumn("DATA", ssm);
   setup.bindColumn("TILED", tsm);
+  setup.bindColumn("CELL", tcsm);
   Table table(setup, kUnitRows);
 
   EXPECT_FALSE(MakeRowUnitStart(table, "DATA"));
   EXPECT_TRUE(MakeRowUnitStart(table, "TILED"));
+  // Each row has its own hypercube
+  EXPECT_FALSE(MakeRowUnitStart(table, "CELL"));
   // Rows of a reference table are numbered differently from its storage managers
   Table reference = table(casacore::Vector<::casacore::rownr_t>{1, 2, 3});
   EXPECT_FALSE(MakeRowUnitStart(reference, "TILED"));

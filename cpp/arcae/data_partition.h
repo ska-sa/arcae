@@ -204,7 +204,7 @@ struct DataChunk {
   std::string ToString() const;
 };
 
-// Returns the first row of the storage unit (a tile, say) holding a row
+// Returns the first row of the storage unit (a band of tiles, say) holding a row
 using RowUnitStart = std::function<casacore::rownr_t(casacore::rownr_t)>;
 
 // Returns a RowUnitStart for the column's storage manager, or an empty

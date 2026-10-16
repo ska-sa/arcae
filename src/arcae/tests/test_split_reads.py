@@ -1,3 +1,5 @@
+import shutil
+
 import numpy as np
 import pytest
 from numpy.testing import assert_array_equal
@@ -77,3 +79,55 @@ def test_split_reads_match(split_table, index, ninstances):
     if expected.nbytes >= ninstances * MIN_SPLIT_BYTES:
         busy = [a["io_bytes"] - b["io_bytes"] for a, b in zip(after, before)]
         assert all(b > 0 for b in busy)
+
+
+NEWCOL_DESC = {
+    "NEWCOL": {
+        "valueType": "double",
+        "option": 0,
+        "maxlen": 0,
+        "comment": "x",
+        "keywords": {},
+        "dataManagerType": "StandardStMan",
+        "dataManagerGroup": "SSM",
+    }
+}
+
+
+@pytest.mark.parametrize("ninstances", [2, 4])
+def test_split_read_after_column_added_elsewhere(split_table, tmp_path, ninstances):
+    """A read split over instances that another handle's new column made stale"""
+    src, data = split_table
+    path = str(tmp_path / "split.table")
+    shutil.copytree(src, path)
+
+    with arcae.table(path, readonly=False, ninstances=ninstances) as B:
+        # Every instance of B is out of date once A adds a column
+        with arcae.table(path, readonly=False, ninstances=1) as A:
+            A.addcols(NEWCOL_DESC, {})
+
+        before = B._instance_stats()
+        assert_array_equal(B.getcol("DATA"), data)
+        after = B._instance_stats()
+        assert "NEWCOL" in B.columns()
+
+    busy = [a["io_bytes"] - b["io_bytes"] for a, b in zip(after, before)]
+    assert all(b > 0 for b in busy)
+
+
+def test_writes_count_against_writer_instance(split_table, tmp_path):
+    """Writes run on instance 0, sharing its statistics with reads"""
+    src, data = split_table
+    path = str(tmp_path / "split.table")
+    shutil.copytree(src, path)
+    rows = np.arange(1000)
+
+    with arcae.table(path, readonly=False, ninstances=4) as T:
+        before = T._instance_stats()
+        T.putcol("DATA", 2 * data[rows], index=(rows,))
+        after = T._instance_stats()
+        assert_array_equal(T.getcol("DATA", index=(rows,)), 2 * data[rows])
+
+    written = [a["io_bytes"] - b["io_bytes"] for a, b in zip(after, before)]
+    assert written[0] == data[rows].nbytes
+    assert written[1:] == [0] * 3

@@ -15,9 +15,10 @@ vcpkg_from_github(
         007-quiet-ms-keyword-logging.patch
         008-disable-rethrow-macro.patch
         009-jsonout-public-put-record.patch
-        010-filelocker-multi-reader-single-writer.patch
+        010-jsonout-round-trip-floats.patch
         011-tableproxy-lock-returns-bool.patch
         012-tiledstman-keep-cache-size-on-resync.patch
+        013-filelocker-multi-reader-single-writer.patch
 )
 
 vcpkg_find_acquire_program(FLEX)

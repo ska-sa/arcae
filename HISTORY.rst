@@ -4,6 +4,8 @@ History
 
 X.Y.Z (DD-MM-YYYY)
 ------------------
+* Read floating point keywords and descriptors back exactly: casacore's JSON
+  writer kept 16 significant digits of doubles and 7 of floats (:pr:`265`)
 * Split the casacore build patch into one patch per concern, and list
   ``nolock`` as a valid lock option in casacore's error message (:pr:`263`)
 * Spread large reads of fixed shape columns over table instances, which

@@ -1,0 +1,52 @@
+diff --git a/casa/Json/JsonOut.cc b/casa/Json/JsonOut.cc
+index 9798c27..a62082b 100644
+--- a/casa/Json/JsonOut.cc
++++ b/casa/Json/JsonOut.cc
+@@ -34,6 +34,7 @@
+ #include <casacore/casa/Containers/ValueHolder.h>
+ #include <sstream>
+ #include <iomanip>
++#include <cstdlib>
+ #include <ctype.h>    //# for iscntrl
+ 
+ namespace casacore { //# NAMESPACE CASACORE - BEGIN
+@@ -209,32 +210,20 @@ namespace casacore { //# NAMESPACE CASACORE - BEGIN
+   }
+   void JsonOut::put (Float value)
+   {
+-    if (! isFinite(value)) {
+-      putNull();
+-    } else {
+-      char buf[16];
+-      snprintf (buf, sizeof(buf), "%.7g", value);
+-      // Add a decimal point if needed, otherwise it is integer.
+-      unsigned i;
+-      for (i=0; i<sizeof(buf); ++i) {
+-        if (buf[i] == '.'  ||  buf[i] == 'e') break;
+-        if (buf[i] == 0) break;
+-      }
+-      if (buf[i] ==0 ) {
+-        buf[i]   = '.';
+-        buf[i+1] = '0';
+-        buf[i+2] = 0;
+-      }
+-      itsStream << buf;
+-    }
++    // Write the widened value, so it reads back as the same double.
++    put (Double(value));
+   }
+   void JsonOut::put (Double value)
+   {
+     if (! isFinite(value)) {
+       putNull();
+     } else {
+-      char buf[24];
++      char buf[32];
+       snprintf (buf, sizeof(buf), "%.16g", value);
++      // 16 digits do not always round trip; 17 always do.
++      if (std::strtod (buf, 0) != value) {
++        snprintf (buf, sizeof(buf), "%.17g", value);
++      }
+       // Add a decimal point if needed, otherwise it is integer.
+       unsigned i;
+       for (i=0; i<sizeof(buf); ++i) {

@@ -1,16 +1,17 @@
 diff --git a/casa/Json/JsonOut.cc b/casa/Json/JsonOut.cc
-index 9798c27..a62082b 100644
+index 9798c27..da0cd00 100644
 --- a/casa/Json/JsonOut.cc
 +++ b/casa/Json/JsonOut.cc
-@@ -34,6 +34,7 @@
+@@ -34,6 +34,8 @@
  #include <casacore/casa/Containers/ValueHolder.h>
  #include <sstream>
  #include <iomanip>
-+#include <cstdlib>
++#include <algorithm>
++#include <charconv>
  #include <ctype.h>    //# for iscntrl
  
  namespace casacore { //# NAMESPACE CASACORE - BEGIN
-@@ -209,32 +210,20 @@ namespace casacore { //# NAMESPACE CASACORE - BEGIN
+@@ -209,44 +211,24 @@ namespace casacore { //# NAMESPACE CASACORE - BEGIN
    }
    void JsonOut::put (Float value)
    {
@@ -41,12 +42,27 @@ index 9798c27..a62082b 100644
        putNull();
      } else {
 -      char buf[24];
+-      snprintf (buf, sizeof(buf), "%.16g", value);
++      // The shortest representation that reads back as the same value.
 +      char buf[32];
-       snprintf (buf, sizeof(buf), "%.16g", value);
-+      // 16 digits do not always round trip; 17 always do.
-+      if (std::strtod (buf, 0) != value) {
-+        snprintf (buf, sizeof(buf), "%.17g", value);
-+      }
++      char* end = std::to_chars (buf, buf + sizeof(buf) - 2, value).ptr;
        // Add a decimal point if needed, otherwise it is integer.
-       unsigned i;
-       for (i=0; i<sizeof(buf); ++i) {
+-      unsigned i;
+-      for (i=0; i<sizeof(buf); ++i) {
+-        if (buf[i] == '.'  ||  buf[i] == 'e') break;
+-        if (buf[i] == 0) break;
+-      }
+-      if (buf[i] ==0 ) {
+-        buf[i]   = '.';
+-        buf[i+1] = '0';
+-        buf[i+2] = 0;
++      if (std::find_if (buf, end, [](char c) {
++            return c == '.'  ||  c == 'e'; }) == end) {
++        *end++ = '.';
++        *end++ = '0';
+       }
+-      itsStream << buf;
++      itsStream.write (buf, end - buf);
+     }
+   }
+   void JsonOut::put (const Complex& value)

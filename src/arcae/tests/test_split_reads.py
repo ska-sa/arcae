@@ -72,13 +72,22 @@ def test_split_reads_match(split_table, index, ninstances):
 
         # Supplying the result array reads into it
         result = np.zeros_like(expected)
+        before_result = T._instance_stats()
         assert T.getcol("DATA", index=index, result=result) is result
+        after_result = T._instance_stats()
         assert_array_equal(result, expected)
 
     # Reads of at least MIN_SPLIT_BYTES per instance are spread over the instances
     if expected.nbytes >= ninstances * MIN_SPLIT_BYTES:
         busy = [a["io_bytes"] - b["io_bytes"] for a, b in zip(after, before)]
         assert all(b > 0 for b in busy)
+        # in one task, and so one lock, per instance: the partitioning
+        # task reads a piece itself. Reading into a result array skips
+        # the complex conversion, which looks up the column descriptor
+        tasks = [
+            a["completed"] - b["completed"] for a, b in zip(after_result, before_result)
+        ]
+        assert tasks == [1] * ninstances
 
 
 NEWCOL_DESC = {

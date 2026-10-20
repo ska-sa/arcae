@@ -372,9 +372,11 @@ Future<std::shared_ptr<Array>> ReadImpl(const std::shared_ptr<IsolatedTableProxy
   // read them in the same task: each hand-off between threads
   // costs more than reading a small column
   struct PartitionResult {
-    std::shared_ptr<DataPartition> partition;
     std::shared_ptr<ResultShapeData> shape;
-    // Populated if the chunks were read in the partitioning task
+    std::shared_ptr<Buffer> buffer;
+    // Reads of groups of chunks spread across the instances
+    std::vector<Future<bool>> reads;
+    // Populated if the chunks were all read in the partitioning task
     std::shared_ptr<Array> array;
   };
 
@@ -386,9 +388,9 @@ Future<std::shared_ptr<Array>> ReadImpl(const std::shared_ptr<IsolatedTableProxy
   constexpr std::size_t kMinSplitBytes = 8 * 1024 * 1024;
   auto row_split = RowSplitOptions{itp->nInstances(), kMinSplitBytes};
 
-  auto part_fut =
-      itp->RunAsync([column = column, selection = selection, result = result, fan_out,
-                     row_split](const TableProxy& tp) mutable -> Result<PartitionResult> {
+  auto part_fut = itp->RunAsync(
+      [itp = itp, column = column, selection = selection, result = result, fan_out,
+       row_split](const TableProxy& tp) mutable -> Result<PartitionResult> {
         ARROW_RETURN_NOT_OK(ColumnExists(tp.table(), column));
         auto table_column = TableColumn(tp.table(), column);
 
@@ -415,44 +417,39 @@ Future<std::shared_ptr<Array>> ReadImpl(const std::shared_ptr<IsolatedTableProxy
         }
         ARROW_ASSIGN_OR_RAISE(auto partition,
                               DataPartition::Make(selection, *shape_data, row_split));
-        auto shared_partition = std::make_shared<DataPartition>(std::move(partition));
-        if (fan_out && shared_partition->nChunks() > 1) {
-          return PartitionResult{std::move(shared_partition), std::move(shape_data),
-                                 nullptr};
+        auto casa_dtype = partition.GetDataType();
+        ARROW_ASSIGN_OR_RAISE(
+            auto buffer,
+            GetResultBufferOrAllocate(partition.nElements(), casa_dtype, result));
+
+        if (!fan_out || partition.nChunks() <= 1) {
+          ARROW_RETURN_NOT_OK(
+              ReadChunks(tp, column, casa_dtype, partition.data_chunks_, *buffer));
+          ARROW_ASSIGN_OR_RAISE(auto array, MakeArray(*shape_data, buffer));
+          return PartitionResult{nullptr, nullptr, {}, std::move(array)};
         }
 
-        ARROW_ASSIGN_OR_RAISE(auto buffer, GetResultBufferOrAllocate(
-                                               shared_partition->nElements(),
-                                               shared_partition->GetDataType(), result));
-        ARROW_RETURN_NOT_OK(ReadChunks(tp, column, shared_partition->GetDataType(),
-                                       shared_partition->data_chunks_, *buffer));
-        ARROW_ASSIGN_OR_RAISE(auto array, MakeArray(*shape_data, buffer));
-        return PartitionResult{nullptr, nullptr, std::move(array)};
-      });
-
-  // Otherwise spread groups of chunks across the instances,
-  // reading each group in a single task, then create an output array
-  return part_fut.Then(
-      [column = column, itp = itp, result_array = result](
-          const PartitionResult& result) -> Future<std::shared_ptr<Array>> {
-        if (result.array) return result.array;
-        auto casa_dtype = result.partition->GetDataType();
-        auto nelements = result.partition->nElements();
-        ARROW_ASSIGN_OR_RAISE(
-            auto buffer, GetResultBufferOrAllocate(nelements, casa_dtype, result_array));
-
-        auto chunks = std::make_shared<std::vector<DataChunk>>(
-            std::move(result.partition->TakeChunks()));
+        // Otherwise spread groups of chunks across the instances. Every task
+        // takes the table lock and forces a resync of every storage manager.
+        // This task already holds the lock, so it reads the first group
+        // itself, and dispatches a task for each of the others
+        auto chunks = std::make_shared<std::vector<DataChunk>>(partition.TakeChunks());
         auto ends = GroupChunks(*chunks, itp->nInstances());
         ARROW_ASSIGN_OR_RAISE(auto dtype_size, CasaDataTypeSize(casa_dtype));
+        auto group_bytes = [&](std::size_t begin, std::size_t end) {
+          std::int64_t nbytes = 0;
+          for (auto c = begin; c < end; ++c)
+            nbytes += (*chunks)[c].nElements() * dtype_size;
+          return nbytes;
+        };
+
+        // Keep the other groups off this instance while it reads the first
+        ReserveIoCost(group_bytes(0, ends[0]));
         std::vector<Future<bool>> reads;
         reads.reserve(ends.size());
+        reads.push_back(Future<bool>::Make());
 
-        for (std::size_t g = 0, begin = 0; g < ends.size(); begin = ends[g++]) {
-          std::size_t nbytes = 0;
-          for (auto c = begin; c < ends[g]; ++c) {
-            nbytes += (*chunks)[c].nElements() * dtype_size;
-          }
+        for (std::size_t g = 1, begin = ends[0]; g < ends.size(); begin = ends[g++]) {
           reads.push_back(itp->RunAsync(
               [column = column, casa_dtype, chunks = chunks, buffer = buffer,
                begin = begin, end = ends[g]](const TableProxy& tp) -> Result<bool> {
@@ -460,13 +457,31 @@ Future<std::shared_ptr<Array>> ReadImpl(const std::shared_ptr<IsolatedTableProxy
                 ARROW_RETURN_NOT_OK(ReadChunks(tp, column, casa_dtype, group, *buffer));
                 return true;
               },
-              CasaLockType::Read, std::int64_t(nbytes)));
+              CasaLockType::Read, group_bytes(begin, ends[g])));
         }
 
-        // Make the array from the now populated buffer
-        return arrow::All(std::move(reads))
+        // The other reads write into buffer, which may be the caller's array.
+        // So a failure here is reported once they finish, rather than thrown
+        auto status = [&]() -> Status {
+          try {
+            auto group = absl::MakeConstSpan(*chunks).subspan(0, ends[0]);
+            return ReadChunks(tp, column, casa_dtype, group, *buffer);
+          } catch (const std::exception& e) {
+            return Status::Invalid("Unhandled exception: ", e.what());
+          }
+        }();
+        reads[0].MarkFinished(status.ok() ? Result<bool>(true) : Result<bool>(status));
+        return PartitionResult{std::move(shape_data), std::move(buffer), std::move(reads),
+                               nullptr};
+      });
+
+  // Make the array once every group of chunks has been read into the buffer
+  return part_fut.Then(
+      [](const PartitionResult& result) -> Future<std::shared_ptr<Array>> {
+        if (result.array) return result.array;
+        return arrow::All(result.reads)
             .Then([result_shape = result.shape,
-                   buffer = buffer](const std::vector<Result<bool>>& reads)
+                   buffer = result.buffer](const std::vector<Result<bool>>& reads)
                       -> Result<std::shared_ptr<Array>> {
               for (const auto& read : reads) ARROW_RETURN_NOT_OK(read);
               return MakeArray(*result_shape, buffer);

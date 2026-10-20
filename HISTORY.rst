@@ -2,8 +2,10 @@
 History
 =======
 
-X.Y.Z (DD-MM-YYYY)
+0.5.8 (20-10-2026)
 ------------------
+* Write doubles in casacore's JSON output with ``std::to_chars``, which gives
+  the shortest representation that reads back exactly (:pr:`267`)
 * Read floating point keywords and descriptors back exactly: casacore's JSON
   writer kept 16 significant digits of doubles and 7 of floats (:pr:`265`)
 * Split the casacore build patch into one patch per concern, and list

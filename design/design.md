@@ -183,6 +183,17 @@ buckets are small, and `StManAipsIO` holds whole columns in memory. Missing (neg
 form one chunk per row. `GroupChunks` then groups the chunks into one group per
 instance, with similar numbers of elements.
 
+Every task takes the table lock and forces a resync of every storage manager
+(§4). So the partitioning task, which already holds the lock, reads the first
+group itself, and only the other groups are dispatched as tasks of their own: a
+read locks each instance it uses once, and the first group starts without a
+hand-off between threads. Before dispatching, the task reserves its group's cost on its own instance
+(`ReserveIoCost`), which otherwise looks about to be free (§3, "Choosing an
+instance") and would be given a group too. No lock is held across tasks, so a
+writer waits behind at most one task per instance. The dispatched groups write
+into the result buffer, which may be the caller's array, so the read reports a
+failure of the first group only once the others have finished.
+
 The decomposition machinery lives alongside the ITP:
 
 - `selection.{h}` — the row/column index selection requested by the caller.

@@ -231,6 +231,13 @@ void RecordIoBytes(std::int64_t nbytes) {
   }
 }
 
+void ReserveIoCost(std::int64_t nbytes) {
+  if (auto* stats = current_task.stats) {
+    stats->outstanding_cost.fetch_add(nbytes, std::memory_order_relaxed);
+    current_task.reserved += nbytes;
+  }
+}
+
 IsolatedTableProxy::Submission IsolatedTableProxy::Dispatch(std::int64_t cost) const {
   assert(proxy_pools_.size() > 0);
   constexpr auto relaxed = std::memory_order_relaxed;
@@ -267,10 +274,11 @@ IsolatedTableProxy::TaskScope::TaskScope(const Submission& submission)
 
 IsolatedTableProxy::TaskScope::~TaskScope() {
   if (!stats_) return;
+  auto reserved = current_task.reserved;
   current_task = previous_;
   // Release the reservation before the task's future completes, so that
   // continuations dispatching further work see this instance as free
-  stats_->outstanding_cost.fetch_sub(cost_, std::memory_order_relaxed);
+  stats_->outstanding_cost.fetch_sub(cost_ + reserved, std::memory_order_relaxed);
   stats_->busy_ns.fetch_add(ElapsedNs(start_, Clock::now()), std::memory_order_relaxed);
   stats_->completed.fetch_add(1, std::memory_order_relaxed);
 }

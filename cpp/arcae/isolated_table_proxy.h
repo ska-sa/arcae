@@ -79,6 +79,8 @@ struct RunningTask {
   InstanceStats* stats = nullptr;
   // Estimated bytes of I/O reserved by the task
   std::int64_t cost = 0;
+  // Further bytes reserved by the task as it runs, see ReserveIoCost
+  std::int64_t reserved = 0;
 };
 
 // Estimated cost of a task whose I/O is unknown, such as reading metadata,
@@ -88,6 +90,13 @@ inline constexpr std::int64_t kDefaultTaskCost = 1024 * 1024;
 // Attribute nbytes of I/O to the instance running the calling task.
 // Does nothing outside of a task dispatched by an IsolatedTableProxy
 void RecordIoBytes(std::int64_t nbytes);
+
+// Reserve nbytes of estimated I/O on the instance running the calling task,
+// until the task completes. A task that dispatches work, and then does some
+// of its own, reserves its own first: otherwise the dispatch treats its
+// instance as about to be free, and places work behind it.
+// Does nothing outside of a task dispatched by an IsolatedTableProxy
+void ReserveIoCost(std::int64_t nbytes);
 
 // Isolates access to a CASA Table to a single thread
 class IsolatedTableProxy : public std::enable_shared_from_this<IsolatedTableProxy> {

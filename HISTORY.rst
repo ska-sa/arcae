@@ -2,7 +2,7 @@
 History
 =======
 
-X.Y.Z (DD-MM-YYYY)
+0.5.8 (20-10-2026)
 ------------------
 * Write doubles in casacore's JSON output with ``std::to_chars``, which gives
   the shortest representation that reads back exactly (:pr:`267`)

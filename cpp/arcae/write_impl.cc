@@ -19,6 +19,7 @@
 #include <arrow/util/future.h>
 #include <arrow/util/logging.h>
 
+#include <casacore/casa/IO/FileLocker.h>
 #include <casacore/casa/Utilities/DataType.h>
 #include <casacore/tables/Tables/ArrayColumn.h>
 #include <casacore/tables/Tables/ScalarColumn.h>
@@ -37,6 +38,8 @@ using ::arrow::Buffer;
 using ::arrow::Future;
 using ::arrow::Result;
 using ::arrow::Status;
+
+using LockType = casacore::FileLocker::LockType;
 
 template <class CT>
 using CasaArray = ::casacore::Array<CT>;
@@ -246,7 +249,7 @@ Future<bool> WriteImpl(const std::shared_ptr<IsolatedTableProxy>& itp,
   return itp->RunAsync(
       [column = column, selection = selection,
        data = data](TableProxy& tp) -> Result<bool> {
-        if (!tp.isWritable()) tp.reopenRW();
+        MaybeReopenRW(tp);
         ARROW_RETURN_NOT_OK(ColumnExists(tp.table(), column));
         auto table_column = TableColumn(tp.table(), column);
         ARROW_ASSIGN_OR_RAISE(auto shape_data,
@@ -269,7 +272,7 @@ Future<bool> WriteImpl(const std::shared_ptr<IsolatedTableProxy>& itp,
             WriteChunks(tp, column, casa_dtype, partition.data_chunks_, *buffer));
         return true;
       },
-      cost);
+      LockType::Write, cost);
 }
 
 }  // namespace detail

@@ -22,6 +22,7 @@
 #include "arcae/isolated_table_proxy.h"
 
 using ::arcae::GetArrayColumn;
+using ::arcae::detail::CasaLockType;
 using ::arcae::detail::IsolatedTableProxy;
 using ::arcae::detail::RecordIoBytes;
 
@@ -72,7 +73,7 @@ class IsolatedTableProxyTest : public ::testing::Test {
     return IsolatedTableProxy::Make([name = table_name_, weak_proxy]() {
       auto lock = TableLock(TableLock::LockOption::AutoLocking);
       auto lockoptions = Record();
-      lockoptions.define("option", "nolock");
+      lockoptions.define("option", "user");
       lockoptions.define("internal", lock.interval());
       lockoptions.define("maxwait", casacore::Int(lock.maxWait()));
       auto proxy = std::make_shared<TableProxy>(name, lockoptions, Table::Old);
@@ -184,7 +185,9 @@ TEST_F(IsolatedTableProxyTest, FailIfClosed) {
 // could ever run
 TEST_F(IsolatedTableProxyTest, CloseFromIsolationThread) {
   ASSERT_OK_AND_ASSIGN(auto itp, OpenTable());
-  auto fut = itp->RunAsync([itp](const TableProxy&) { return itp->Close(); });
+  // No lock: the task closes the table, so there is nothing left to unlock
+  auto fut = itp->RunAsync([itp](const TableProxy&) { return itp->Close(); },
+                           CasaLockType::None);
   ASSERT_TRUE(fut.Wait(kTeardownTimeout))
       << "Close() deadlocked on its own isolation thread";
   ASSERT_OK_AND_ASSIGN(auto closed, fut.MoveResult());
@@ -353,7 +356,7 @@ TEST_F(IsolatedTableProxyTest, PlaceByOutstandingCost) {
         release.Wait();
         return true;
       },
-      kLargeCost);
+      CasaLockType::Read, kLargeCost);
 
   // Small tasks all go to the second instance, although after the first of
   // them it has as many outstanding tasks as the first instance.
@@ -399,26 +402,22 @@ TEST_F(IsolatedTableProxyTest, PlaceByOutstandingCost) {
 TEST_F(IsolatedTableProxyTest, DispatchDuringClose) {
   ASSERT_OK_AND_ASSIGN(auto itp, OpenTable());
 
-  // Hold the isolation thread, so that the close is queued behind this task
-  auto release = arrow::Future<>::Make();
-  auto blocked = itp->RunAsync([release](TableProxy&) {
-    release.Wait();
-    return true;
-  });
-
-  auto closing = std::thread([&itp]() { ASSERT_OK(itp->Close()); });
-  // Give Close() time to queue the close behind the blocked task
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
-  ASSERT_FALSE(itp->IsClosed());
-
-  // Dispatched before Close() returns, so queued behind the close
-  auto late = itp->RunAsync([](TableProxy& tp) { return tp.table().nrow(); });
-
-  release.MarkFinished();
-  closing.join();
-  ASSERT_OK(blocked.MoveResult());
+  // Close() lets each instance go idle before closing it, so a task dispatched
+  // from another thread while it waits runs before the close. A task can only
+  // be queued behind the close on an instance closed from its own isolation
+  // thread: dispatch from the closing task, then close the table inline.
+  // No lock: the task closes the table, so there is nothing left to unlock
+  auto late = std::make_shared<arrow::Future<casacore::rownr_t>>();
+  ASSERT_OK(itp->RunSync(
+      [itp, late](const TableProxy&) -> arrow::Result<bool> {
+        // Dispatched before the close, so it passes CheckClosed()
+        *late = itp->RunAsync([](TableProxy& tp) { return tp.table().nrow(); });
+        return itp->Close();
+      },
+      CasaLockType::None));
+  ASSERT_TRUE(itp->IsClosed());
   EXPECT_RAISES_WITH_MESSAGE_THAT(Invalid, ::testing::HasSubstr("closed"),
-                                  late.MoveResult());
+                                  late->MoveResult());
 }
 
 }  // namespace

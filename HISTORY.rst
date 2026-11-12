@@ -7,6 +7,9 @@ X.Y.Z (DD-MM-YYYY)
 * Upgrade to vcpkg 2026.10.16 and remove the cfitsio 4.1.0 overlay port in
   favour of upstream cfitsio 4.7.0, which compiles under GCC 15's
   C23 default (:pr:`272`)
+* Build arm64 macOS wheels on macos-15 runners, as macos-14 runners were
+  retired on 02-11-2026. Pin the vcpkg dependency deployment target to 14.0
+  so the wheels still support macOS 14 (:pr:`273`)
 
 0.5.8 (20-10-2026)
 ------------------

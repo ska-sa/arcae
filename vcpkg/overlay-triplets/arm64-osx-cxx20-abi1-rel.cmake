@@ -3,6 +3,11 @@ set(VCPKG_CRT_LINKAGE dynamic)
 set(VCPKG_LIBRARY_LINKAGE static)
 set(VCPKG_BUILD_TYPE release)
 
+# Dependencies are statically linked into the wheel's extension module, so they
+# must target the wheel's MACOSX_DEPLOYMENT_TARGET, not the runner's macOS version.
+# delocate only checks bundled dylibs and would not catch a mismatch.
+set(VCPKG_OSX_DEPLOYMENT_TARGET 14.0)
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED On)
 set(CMAKE_CXX_EXTENSIONS Off)

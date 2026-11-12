@@ -220,7 +220,7 @@ Result<TableDesc> MSTableDescriptor(const String& table, bool complete) {
   String table_ = table;
 
   // Upper case things to be sure
-  table_.upcase();
+  casacore::ToUpperCaseInPlace(table_);
 
   if (table.empty() || table_ == kMain) {
     return MainMSDesc(complete);

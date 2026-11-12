@@ -1,8 +1,8 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 7401224..97388fd 100644
+index 774aa195f..76fd32f74 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -361,11 +361,6 @@ endif (_usebison STREQUAL YES)
+@@ -351,11 +351,6 @@ find_package (BISON 3 REQUIRED)
  if (_uselapack STREQUAL YES)
      find_package (BLAS REQUIRED)
      find_package (LAPACK REQUIRED)
@@ -14,7 +14,7 @@ index 7401224..97388fd 100644
  endif (_uselapack STREQUAL YES)
  if (_usefits STREQUAL YES)
      find_package (CFITSIO 3.030 REQUIRED) # Should pad to three decimal digits
-@@ -410,11 +405,15 @@ if (HDF5_FOUND)
+@@ -400,11 +395,15 @@ if (HDF5_FOUND)
      add_definitions(-DHAVE_HDF5)
  endif (HDF5_FOUND)
  
@@ -35,7 +35,7 @@ index 7401224..97388fd 100644
  
  if (DL_FOUND)
      add_definitions(-DHAVE_DL)
-@@ -567,8 +566,41 @@ endforeach (module)
+@@ -558,8 +557,41 @@ endforeach (module)
  
  # Install pkg-config support file
  CONFIGURE_FILE("casacore.pc.in" "casacore.pc" @ONLY)
@@ -81,7 +81,7 @@ index 7401224..97388fd 100644
  message (STATUS "CMAKE_SYSTEM .......... = ${CMAKE_SYSTEM}")
 diff --git a/Config.cmake.in b/Config.cmake.in
 new file mode 100644
-index 0000000..8c9ad12
+index 000000000..8c9ad12aa
 --- /dev/null
 +++ b/Config.cmake.in
 @@ -0,0 +1,5 @@
@@ -91,7 +91,7 @@ index 0000000..8c9ad12
 +
 +check_required_components(@PROJECT_NAME@)
 diff --git a/casa/CMakeLists.txt b/casa/CMakeLists.txt
-index 60fa2b6..a573d61 100644
+index 9fd147340..09638550a 100644
 --- a/casa/CMakeLists.txt
 +++ b/casa/CMakeLists.txt
 @@ -15,7 +15,9 @@ set (
@@ -105,7 +105,7 @@ index 60fa2b6..a573d61 100644
  foreach (src ${parser_inputs})
      if (BISON_VERSION VERSION_LESS 3.0)
          set(EXTRA_BISON_FLAGS "-p ${src}")
-@@ -294,16 +296,18 @@ find_library(libm m)
+@@ -292,16 +294,18 @@ find_library(libm m)
  
  target_link_libraries (
  casa_casa
@@ -127,7 +127,7 @@ index 60fa2b6..a573d61 100644
  ARCHIVE DESTINATION lib${LIB_SUFFIX}
  LIBRARY PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
 diff --git a/cmake/FindFFTW3.cmake b/cmake/FindFFTW3.cmake
-index 886f3be..66d1176 100644
+index 886f3bebb..66d117674 100644
 --- a/cmake/FindFFTW3.cmake
 +++ b/cmake/FindFFTW3.cmake
 @@ -58,15 +58,6 @@ foreach(_comp ${_components})
@@ -147,7 +147,7 @@ index 886f3be..66d1176 100644
  # find_package_handle_standard_args().
  set(_check_list)
 diff --git a/coordinates/CMakeLists.txt b/coordinates/CMakeLists.txt
-index 783ac1d..5871327 100644
+index 783ac1d45..5871327d3 100644
 --- a/coordinates/CMakeLists.txt
 +++ b/coordinates/CMakeLists.txt
 @@ -31,6 +31,7 @@ init_pch_support(casa_coordinates ${top_level_headers})
@@ -159,7 +159,7 @@ index 783ac1d..5871327 100644
  ARCHIVE DESTINATION lib${LIB_SUFFIX}
  LIBRARY PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
 diff --git a/derivedmscal/CMakeLists.txt b/derivedmscal/CMakeLists.txt
-index ff8da2a..232e5b9 100644
+index ff8da2a3e..232e5b93f 100644
 --- a/derivedmscal/CMakeLists.txt
 +++ b/derivedmscal/CMakeLists.txt
 @@ -19,6 +19,7 @@ init_pch_support(casa_derivedmscal ${top_level_headers})
@@ -171,7 +171,7 @@ index ff8da2a..232e5b9 100644
  ARCHIVE DESTINATION lib${LIB_SUFFIX}
  LIBRARY PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
 diff --git a/fits/CMakeLists.txt b/fits/CMakeLists.txt
-index 65b888e..47cf365 100644
+index 65b888eec..47cf365e7 100644
 --- a/fits/CMakeLists.txt
 +++ b/fits/CMakeLists.txt
 @@ -30,14 +30,19 @@ FITS.h
@@ -197,7 +197,7 @@ index 65b888e..47cf365 100644
  ARCHIVE DESTINATION lib${LIB_SUFFIX}
  LIBRARY PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
 diff --git a/fits/apps/CMakeLists.txt b/fits/apps/CMakeLists.txt
-index b2e4220..45dde2e 100644
+index b2e422000..45dde2e82 100644
 --- a/fits/apps/CMakeLists.txt
 +++ b/fits/apps/CMakeLists.txt
 @@ -1,4 +1,5 @@
@@ -208,7 +208,7 @@ index b2e4220..45dde2e 100644
 +target_link_libraries (fits2table PUBLIC casa_fits ${CASACORE_ARCH_LIBS} PRIVATE ZLIB::ZLIB)
  install(TARGETS fits2table)
 diff --git a/images/CMakeLists.txt b/images/CMakeLists.txt
-index 5ff84c3..4602bb1 100644
+index 5ff84c303..4602bb155 100644
 --- a/images/CMakeLists.txt
 +++ b/images/CMakeLists.txt
 @@ -83,10 +83,11 @@ casa_lattices
@@ -225,7 +225,7 @@ index 5ff84c3..4602bb1 100644
  ARCHIVE DESTINATION lib${LIB_SUFFIX}
  LIBRARY PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
 diff --git a/lattices/CMakeLists.txt b/lattices/CMakeLists.txt
-index dccca16..29465d7 100644
+index dccca16d5..29465d734 100644
 --- a/lattices/CMakeLists.txt
 +++ b/lattices/CMakeLists.txt
 @@ -77,6 +77,7 @@ ${CASACORE_ARCH_LIBS}
@@ -237,7 +237,7 @@ index dccca16..29465d7 100644
  ARCHIVE DESTINATION lib${LIB_SUFFIX}
  LIBRARY PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
 diff --git a/meas/CMakeLists.txt b/meas/CMakeLists.txt
-index a2c9d56..d3b5b65 100644
+index a2c9d5639..d3b5b6591 100644
 --- a/meas/CMakeLists.txt
 +++ b/meas/CMakeLists.txt
 @@ -30,6 +30,7 @@ init_pch_support(casa_meas ${top_level_headers})
@@ -249,7 +249,7 @@ index a2c9d56..d3b5b65 100644
  LIBRARY DESTINATION lib${LIB_SUFFIX}
  ARCHIVE DESTINATION lib${LIB_SUFFIX}
 diff --git a/measures/CMakeLists.txt b/measures/CMakeLists.txt
-index 91285e3..696a859 100644
+index 91285e3d6..696a859a6 100644
 --- a/measures/CMakeLists.txt
 +++ b/measures/CMakeLists.txt
 @@ -78,10 +78,11 @@ init_pch_support(casa_measures ${top_level_headers})
@@ -266,7 +266,7 @@ index 91285e3..696a859 100644
  ARCHIVE DESTINATION lib${LIB_SUFFIX}
  LIBRARY PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
 diff --git a/mirlib/CMakeLists.txt b/mirlib/CMakeLists.txt
-index b8b6aac..0b71077 100644
+index b8b6aac65..0b71077bb 100644
 --- a/mirlib/CMakeLists.txt
 +++ b/mirlib/CMakeLists.txt
 @@ -27,6 +27,7 @@ target_link_libraries (casa_mirlib casa_casa ${CASACORE_ARCH_LIBS})
@@ -278,7 +278,7 @@ index b8b6aac..0b71077 100644
  LIBRARY DESTINATION lib${LIB_SUFFIX}
  ARCHIVE DESTINATION lib${LIB_SUFFIX}
 diff --git a/ms/CMakeLists.txt b/ms/CMakeLists.txt
-index 850ab87..9ba0db0 100644
+index 850ab8706..9ba0db082 100644
 --- a/ms/CMakeLists.txt
 +++ b/ms/CMakeLists.txt
 @@ -189,9 +189,10 @@ casa_ms casa_measures
@@ -294,7 +294,7 @@ index 850ab87..9ba0db0 100644
  LIBRARY DESTINATION lib${LIB_SUFFIX}
  ARCHIVE DESTINATION lib${LIB_SUFFIX}
 diff --git a/msfits/CMakeLists.txt b/msfits/CMakeLists.txt
-index b8340e0..6b434d3 100644
+index b8340e009..6b434d3b4 100644
 --- a/msfits/CMakeLists.txt
 +++ b/msfits/CMakeLists.txt
 @@ -32,10 +32,11 @@ init_pch_support(casa_msfits ${top_level_headers})
@@ -311,7 +311,7 @@ index b8340e0..6b434d3 100644
  ARCHIVE DESTINATION lib${LIB_SUFFIX}
  LIBRARY PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
 diff --git a/scimath/CMakeLists.txt b/scimath/CMakeLists.txt
-index b7f2900..9999811 100644
+index b7f2900f1..999981164 100644
 --- a/scimath/CMakeLists.txt
 +++ b/scimath/CMakeLists.txt
 @@ -62,6 +62,7 @@ else (FFTW3_FOUND)
@@ -323,7 +323,7 @@ index b7f2900..9999811 100644
  ARCHIVE DESTINATION lib${LIB_SUFFIX}
  LIBRARY PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_WRITE GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
 diff --git a/scimath_f/CMakeLists.txt b/scimath_f/CMakeLists.txt
-index 69bd4d7..8e6aa8d 100644
+index 69bd4d757..8e6aa8d8a 100644
 --- a/scimath_f/CMakeLists.txt
 +++ b/scimath_f/CMakeLists.txt
 @@ -50,6 +50,7 @@ target_link_libraries (casa_scimath_f casa_tables ${LAPACK_LIBRARIES} ${BLAS_LIB
@@ -335,10 +335,10 @@ index 69bd4d7..8e6aa8d 100644
  ARCHIVE DESTINATION lib${LIB_SUFFIX}
  LIBRARY PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
 diff --git a/tables/CMakeLists.txt b/tables/CMakeLists.txt
-index 59feaec..cd87055 100644
+index 52a28969f..0b83bb722 100644
 --- a/tables/CMakeLists.txt
 +++ b/tables/CMakeLists.txt
-@@ -258,15 +258,22 @@ TaQL.h
+@@ -257,15 +257,22 @@ TaQL.h
  
  init_pch_support(casa_tables ${top_level_headers})
  

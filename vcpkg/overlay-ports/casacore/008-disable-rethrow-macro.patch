@@ -1,13 +1,21 @@
 diff --git a/casa/Exceptions/Error.h b/casa/Exceptions/Error.h
-index 12229f9..a15e508 100644
+index 75e85c158..8f11d5308 100644
 --- a/casa/Exceptions/Error.h
 +++ b/casa/Exceptions/Error.h
-@@ -91,7 +91,7 @@ namespace casacore { //# NAMESPACE CASACORE - BEGIN
- #define ThrowIfError(c,m) {if (AIPS_UNLIKELY(c)) {casacore::AipsError::throwIfError (casacore::True, (m), __FILE__, __LINE__, __PRETTY_FUNCTION__);}}
+@@ -115,11 +115,11 @@ namespace casacore {  // # NAMESPACE CASACORE - BEGIN
+   }
  
  // Repackage and rethrow an AipsError exception.
--#define Rethrow(e,m) {throw casacore::AipsError::repackageAipsError ((e),(m),__FILE__,__LINE__, __PRETTY_FUNCTION__);}
-+// #define Rethrow(e,m) {throw casacore::AipsError::repackageAipsError ((e),(m),__FILE__,__LINE__, __PRETTY_FUNCTION__);}
- 
+-#define Rethrow(e, m)                                                           \
+-  {                                                                             \
+-    throw casacore::AipsError::repackageAipsError((e), (m), __FILE__, __LINE__, \
+-                                                  __PRETTY_FUNCTION__);         \
+-  }
++// #define Rethrow(e, m)                                                        \
++//   {                                                                          \
++//     throw casacore::AipsError::repackageAipsError((e), (m), __FILE__, __LINE__, \
++//                                                   __PRETTY_FUNCTION__);      \
++//   }
  
  // <summary>Base class for all Casacore library errors</summary>
+ // <use visibility=export>

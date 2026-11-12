@@ -1,7 +1,8 @@
 diff --git a/tables/Dysco/dyscostman.cc b/tables/Dysco/dyscostman.cc
+index 2fd943d8b..69bb77498 100644
 --- a/tables/Dysco/dyscostman.cc
 +++ b/tables/Dysco/dyscostman.cc
-@@ -152,6 +152,9 @@
+@@ -147,6 +147,9 @@ casacore::Record DyscoStMan::dataManagerSpec() const {
    spec.define("normalization", normStr);
    spec.define("studentTNu", _studentTNu);
    spec.define("distributionTruncation", _distributionTruncation);

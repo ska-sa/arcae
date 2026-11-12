@@ -32,9 +32,24 @@ check_exported_symbols() {
   fi
 }
 
+# On free-threaded CPython, importing an extension that isn't marked
+# free-threading compatible silently re-enables the GIL (with a warning)
+check_gil_disabled() {
+  python -c "
+import sys, sysconfig
+if sysconfig.get_config_var('Py_GIL_DISABLED'):
+    import arcae.lib.arrow_tables
+    if sys._is_gil_enabled():
+        sys.exit('ERROR: importing arcae re-enabled the GIL')
+    print('OK: the GIL stays disabled after importing arcae')
+"
+}
+
 if [ "$OS" = "Linux" ] || [ "$OS" = "Darwin" ]; then
   check_exported_symbols
 fi
+
+check_gil_disabled || exit 1
 
 if [[ "$OS" == "Linux" && "$ARCH" == "x86_64" ]]; then
   # We can only rely on the python-casacore wheels for linux x86

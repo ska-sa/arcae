@@ -1,5 +1,7 @@
 #include "arcae/configuration.h"
 
+#include <mutex>
+#include <shared_mutex>
 #include <string>
 
 #include <arrow/result.h>
@@ -13,6 +15,7 @@ namespace arcae {
 Status SafeMultiThreadedWrites() { return Status::OK(); }
 
 Result<std::string> Configuration::Get(const std::string& key) const {
+  std::shared_lock lock(mutex_);
   if (auto it = kvmap_.find(key); it != kvmap_.end()) {
     return it->second;
   }
@@ -21,6 +24,7 @@ Result<std::string> Configuration::Get(const std::string& key) const {
 
 std::string Configuration::GetDefault(const std::string& key,
                                       std::string default_value) const {
+  std::shared_lock lock(mutex_);
   if (auto it = kvmap_.find(key); it != kvmap_.end()) {
     return it->second;
   }
@@ -28,6 +32,7 @@ std::string Configuration::GetDefault(const std::string& key,
 }
 
 Result<bool> Configuration::Delete(const std::string& key) {
+  std::unique_lock lock(mutex_);
   if (auto it = kvmap_.find(key); it != kvmap_.end()) {
     kvmap_.erase(it);
     return true;

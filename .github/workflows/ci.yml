@@ -15,8 +15,9 @@ env:
   VCPKG_BINARY_SOURCES: "clear;x-aws,${{ secrets.VCPKG_CACHE_URL }},readwrite"
   VCPKG_INSTALLED_DIR: /tmp/vcpkg_installed
   ARTIFACT_NAME: wheel
-  WHEEL_PYTHON_VERSIONS: "3.11 3.12 3.13 3.14"
-  PR_WHEEL_PYTHON_VERSIONS: "3.11 3.14"
+  # A trailing "t" selects a free-threaded build, e.g. 3.14t -> cp314t
+  WHEEL_PYTHON_VERSIONS: "3.11 3.12 3.13 3.14 3.14t 3.15 3.15t"
+  PR_WHEEL_PYTHON_VERSIONS: "3.11 3.15 3.15t"
 
 jobs:
   build-sdist:
@@ -65,7 +66,7 @@ jobs:
           sudo apt -y update
           sudo apt -y install build-essential cmake
           python -m pip install -U pip
-          python -m pip install pyarrow==23.0.1
+          python -m pip install pyarrow==26.0.1
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v6.3.0
@@ -112,7 +113,7 @@ jobs:
           echo "$(brew --prefix bison)/bin" >> "$GITHUB_PATH"
           echo "$(brew --prefix flex)/bin" >> "$GITHUB_PATH"
           python -m pip install -U pip
-          python -m pip install pyarrow==23.0.1
+          python -m pip install pyarrow==26.0.1
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v6.3.0
@@ -145,7 +146,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ["ubuntu-22.04", "macos-15-intel", "macos-14", "ubuntu-22.04-arm"]
+        os: ["ubuntu-22.04", "macos-15-intel", "macos-15", "ubuntu-22.04-arm"]
         is_main_or_release:
           - ${{ contains(github.ref, 'main') || startsWith(github.ref, 'refs/tags')}}
         include:
@@ -165,7 +166,7 @@ jobs:
             deployment_target: "15.0"
             triplet: "x64-osx-cxx20-abi1-rel"
             extra_build: "macosx_x86_64"
-          - os: macos-14
+          - os: macos-15
             os_short: macos
             arch: arm64
             deployment_target: "14.0"
@@ -223,7 +224,7 @@ jobs:
             VCPKG_INSTALLED_DIR=${{ env.VCPKG_INSTALLED_DIR }}
             LD_LIBRARY_PATH=${{ env.VCPKG_INSTALLED_DIR }}/${{ matrix.triplet }}/lib
             MACOSX_DEPLOYMENT_TARGET=${{ matrix.deployment_target }}
-        uses: pypa/cibuildwheel@v4.3.1
+        uses: pypa/cibuildwheel@v4.3.5
 
       - name: Upload wheel artifacts
         uses: actions/upload-artifact@v7

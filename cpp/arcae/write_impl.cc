@@ -213,8 +213,13 @@ Result<std::shared_ptr<Buffer>> ExtractBufferOrCopyValues(
     return datum.make_array()->data()->buffers[1];
   } else if (casa_dtype == DataType::TpString) {
     // We need to copy arrow strings to casacore strings.
-    auto flat_strings = std::dynamic_pointer_cast<arrow::StringArray>(flat_array);
-    if (!flat_strings) return Status::Invalid("Cast to StringArray");
+    // Check the type id and static_pointer_cast, rather than dynamic_pointer_cast:
+    // the static monolith keeps private copies of Arrow typeinfo objects that
+    // have no key function, which fail macOS x86_64's pointer-based RTTI checks
+    if (flat_array->type_id() != arrow::Type::STRING) {
+      return Status::Invalid("Expected a string array, got ", flat_array->type());
+    }
+    auto flat_strings = std::static_pointer_cast<arrow::StringArray>(flat_array);
     auto nbytes = sizeof(String) * flat_strings->length();
     ARROW_ASSIGN_OR_RAISE(auto allocation, arrow::AllocateBuffer(nbytes));
     auto span = allocation->mutable_span_as<String>();

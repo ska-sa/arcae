@@ -1,28 +1,29 @@
 diff --git a/tables/Tables/TableProxy.cc b/tables/Tables/TableProxy.cc
-index f65cf26..3f806cd 100644
+index 83abba5e9..6b6c76421 100644
 --- a/tables/Tables/TableProxy.cc
 +++ b/tables/Tables/TableProxy.cc
-@@ -271,6 +271,9 @@ Record TableProxy::lockOptions()
-       option = "autonoread";
-     }
-     break;
-+  case TableLock::NoLocking:
-+    option = "nolock";
-+    break;
-   default:
-     option = "unknown";
+@@ -220,6 +220,9 @@ Record TableProxy::lockOptions() {
+         option = "autonoread";
+       }
+       break;
++    case TableLock::NoLocking:
++      option = "nolock";
++      break;
+     default:
+       option = "unknown";
    }
-@@ -3403,10 +3406,12 @@ TableLock TableProxy::makeLockOptions (const Record& options)
+@@ -2781,11 +2784,13 @@ TableLock TableProxy::makeLockOptions(const Record& options) {
      opt = TableLock::PermanentLocking;
    } else if (str == "permanentwait") {
      opt = TableLock::PermanentLockingWait;
 +  } else if (str == "nolock") {
 +    opt = TableLock::NoLocking;
    } else {
-     throw TableError ("'" + str + "' is an unknown lock option; valid are "
- 		      "default,auto,autonoread,user,usernoread,permanent,"
--		      "permanentwait");
-+		      "permanentwait,nolock");
+     throw TableError("'" + str +
+                      "' is an unknown lock option; valid are "
+                      "default,auto,autonoread,user,usernoread,permanent,"
+-                     "permanentwait");
++                     "permanentwait,nolock");
    }
    if (options.nfields() == 1) {
      return TableLock(opt);

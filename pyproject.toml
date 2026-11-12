@@ -10,11 +10,12 @@ requires-python = ">= 3.11"
 license = {file = "LICENSE"}
 classifiers = [
     "License :: OSI Approved :: BSD License",
-    "Programming Language :: Python :: 3"
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: Free Threading :: 2 - Beta"
 ]
 dependencies = [
     "numpy >= 2.0.0",
-    "pyarrow == 23.0.1"
+    "pyarrow == 26.0.1"
 ]
 
 [project.optional-dependencies]
@@ -45,7 +46,7 @@ requires = [
     "cython>=3.2.0",
     "scikit-build-core",
     "numpy >= 2.0.0",
-    "pyarrow == 23.0.1"]
+    "pyarrow == 26.0.1"]
 build-backend = "scikit_build_core.build"
 
 [tool.setuptools.packages]
@@ -70,9 +71,17 @@ test-extras = ["applications", "test"]
 repair-wheel-command = """
 auditwheel repair \
     -w {dest_dir} {wheel} \
-    --exclude libarrow_python.so.2300 \
-    --exclude libarrow.so.2300
+    --exclude libarrow_python.so.2600 \
+    --exclude libarrow.so.2600
 """
+
+# duckdb only publishes abi3 wheels, which free-threaded CPython can't install,
+# so it would be built from source. It is only used by one test, which is
+# skipped (pytest.importorskip) when duckdb is absent.
+[[tool.cibuildwheel.overrides]]
+select = "cp3*t-*"
+test-extras = ["applications"]
+test-requires = ["platformdirs", "pytest >= 7.0.0, !=9.1.0", "requests"]
 
 [tool.cibuildwheel.macos]
 before-all = "{package}/ci/scripts/before-all-macos.sh"
@@ -83,7 +92,7 @@ DYLD_LIBRARY_PATH=$LD_LIBRARY_PATH delocate-wheel \
     --require-archs {delocate_archs} \
     -w {dest_dir} \
     -v {wheel} \
-    --exclude libarrow_python.2300.dylib \
-    --exclude libarrow.2300.dylib \
+    --exclude libarrow_python.2600.dylib \
+    --exclude libarrow.2600.dylib \
     --ignore-missing-dependencies
 """

@@ -2,6 +2,23 @@
 History
 =======
 
+0.5.9 (12-11-2026)
+------------------
+* Upgrade to vcpkg 2026.10.16 and remove the cfitsio 4.1.0 overlay port in
+  favour of upstream cfitsio 4.7.0, which compiles under GCC 15's
+  C23 default (:pr:`272`)
+* Build arm64 macOS wheels on macos-15 runners, as macos-14 runners were
+  retired on 02-11-2026. Pin the vcpkg dependency deployment target to 14.0
+  so the wheels still support macOS 14 (:pr:`273`)
+* Upgrade to casacore 3.8.2, porting arcae's casacore patches onto its
+  reformatted sources (:pr:`275`)
+* Upgrade to pyarrow 26.0.1 (:pr:`276`)
+* Cast Arrow arrays with ``static_pointer_cast`` after checking their type id,
+  as ``dynamic_pointer_cast`` to ``StringArray`` fails on macOS x86_64 with
+  pyarrow 26 (:pr:`276`)
+* Build free-threaded wheels for Python 3.14t and 3.15t, and regular
+  wheels for Python 3.15. Make ``arcae.config`` thread-safe (:pr:`277`)
+
 0.5.8 (20-10-2026)
 ------------------
 * Write doubles in casacore's JSON output with ``std::to_chars``, which gives

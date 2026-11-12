@@ -46,9 +46,7 @@ set(CMAKE_TOOLCHAIN_FILE
     CACHE FILEPATH "")
 
 set(VCPKG_OVERLAY_TRIPLETS ${CMAKE_SOURCE_DIR}/vcpkg/overlay-triplets)
-set(VCPKG_OVERLAY_PORTS
-    ${CMAKE_SOURCE_DIR}/vcpkg/overlay-ports/casacore
-    ${CMAKE_SOURCE_DIR}/vcpkg/overlay-ports/cfitsio)
+set(VCPKG_OVERLAY_PORTS ${CMAKE_SOURCE_DIR}/vcpkg/overlay-ports/casacore)
 
 # Discover or infer the vcpkg target triplet
 if(DEFINED ENV{VCPKG_TARGET_TRIPLET})

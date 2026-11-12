@@ -2,6 +2,12 @@
 History
 =======
 
+X.Y.Z (DD-MM-YYYY)
+------------------
+* Upgrade to vcpkg 2026.10.16 and remove the cfitsio 4.1.0 overlay port in
+  favour of upstream cfitsio 4.7.0, which compiles under GCC 15's
+  C23 default (:pr:`272`)
+
 0.5.8 (20-10-2026)
 ------------------
 * Write doubles in casacore's JSON output with ``std::to_chars``, which gives

@@ -2,7 +2,7 @@
 History
 =======
 
-X.Y.Z (DD-MM-YYYY)
+0.5.9 (12-11-2026)
 ------------------
 * Upgrade to vcpkg 2026.10.16 and remove the cfitsio 4.1.0 overlay port in
   favour of upstream cfitsio 4.7.0, which compiles under GCC 15's

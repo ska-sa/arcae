@@ -88,8 +88,10 @@ target_link_directories(arcae PUBLIC ${_PYARROW_LIBDIRS})
 target_link_libraries(arcae PUBLIC arrow absl::span "${CASACORE_LINK_GROUP}")
 target_include_directories(arcae PUBLIC
     ${CASACORE_PC_INCLUDE_DIRS}
-    ${PYARROW_INCLUDE}
     ${CMAKE_CURRENT_SOURCE_DIR})
+# SYSTEM, so -pedantic -Werror above applies to arcae, not pyarrow's headers
+# (pyarrow 26's vendored safeint uses __int128)
+target_include_directories(arcae SYSTEM PUBLIC ${PYARROW_INCLUDE})
 
 set_target_properties(arcae PROPERTIES
     POSITION_INDEPENDENT_CODE 1)

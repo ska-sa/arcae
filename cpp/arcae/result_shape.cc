@@ -304,17 +304,17 @@ Result<RowShapes> GetRowShapes(const std::shared_ptr<arrow::Array>& data, int nd
     for (bool done = false; !done;) {
       switch (tmp->type_id()) {
         case arrow::Type::LIST: {
-          auto list = std::dynamic_pointer_cast<arrow::ListArray>(tmp);
+          auto list = std::static_pointer_cast<arrow::ListArray>(tmp);
           ARROW_ASSIGN_OR_RAISE(tmp, SetRowShape(list, r, start, end, ndim))
           continue;
         }
         case arrow::Type::LARGE_LIST: {
-          auto list = std::dynamic_pointer_cast<arrow::LargeListArray>(tmp);
+          auto list = std::static_pointer_cast<arrow::LargeListArray>(tmp);
           ARROW_ASSIGN_OR_RAISE(tmp, SetRowShape(list, r, start, end, ndim))
           continue;
         }
         case arrow::Type::FIXED_SIZE_LIST: {
-          auto list = std::dynamic_pointer_cast<arrow::FixedSizeListArray>(tmp);
+          auto list = std::static_pointer_cast<arrow::FixedSizeListArray>(tmp);
           ARROW_ASSIGN_OR_RAISE(tmp, SetRowShape(list, r, start, end, ndim))
           continue;
         }
@@ -374,17 +374,17 @@ Result<ResultShapeData> GetArrowResultShapeData(
   for (auto done = false; !done;) {
     switch (tmp->type_id()) {
       case arrow::Type::LARGE_LIST: {
-        auto lla = std::dynamic_pointer_cast<arrow::LargeListArray>(tmp);
+        auto lla = std::static_pointer_cast<arrow::LargeListArray>(tmp);
         ARROW_ASSIGN_OR_RAISE(tmp, MaybeUpdateShapeAndNdim(lla));
         break;
       }
       case arrow::Type::LIST: {
-        auto la = std::dynamic_pointer_cast<arrow::ListArray>(tmp);
+        auto la = std::static_pointer_cast<arrow::ListArray>(tmp);
         ARROW_ASSIGN_OR_RAISE(tmp, MaybeUpdateShapeAndNdim(la));
         break;
       }
       case arrow::Type::FIXED_SIZE_LIST: {
-        auto fsla = std::dynamic_pointer_cast<arrow::FixedSizeListArray>(tmp);
+        auto fsla = std::static_pointer_cast<arrow::FixedSizeListArray>(tmp);
         ARROW_ASSIGN_OR_RAISE(tmp, MaybeUpdateShapeAndNdim(fsla));
         break;
       }

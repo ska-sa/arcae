@@ -16,6 +16,8 @@ X.Y.Z (DD-MM-YYYY)
 * Cast Arrow arrays with ``static_pointer_cast`` after checking their type id,
   as ``dynamic_pointer_cast`` to ``StringArray`` fails on macOS x86_64 with
   pyarrow 26 (:pr:`276`)
+* Build free-threaded wheels for Python 3.14t and 3.15t, and regular
+  wheels for Python 3.15. Make ``arcae.config`` thread-safe (:pr:`277`)
 
 0.5.8 (20-10-2026)
 ------------------

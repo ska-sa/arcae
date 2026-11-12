@@ -15,8 +15,9 @@ env:
   VCPKG_BINARY_SOURCES: "clear;x-aws,${{ secrets.VCPKG_CACHE_URL }},readwrite"
   VCPKG_INSTALLED_DIR: /tmp/vcpkg_installed
   ARTIFACT_NAME: wheel
-  WHEEL_PYTHON_VERSIONS: "3.11 3.12 3.13 3.14"
-  PR_WHEEL_PYTHON_VERSIONS: "3.11 3.14"
+  # A trailing "t" selects a free-threaded build, e.g. 3.14t -> cp314t
+  WHEEL_PYTHON_VERSIONS: "3.11 3.12 3.13 3.14 3.14t 3.15 3.15t"
+  PR_WHEEL_PYTHON_VERSIONS: "3.11 3.15 3.15t"
 
 jobs:
   build-sdist:

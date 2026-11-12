@@ -905,8 +905,8 @@ TEST_F(VariableProxyTest, MissingSelection) {
   ASSERT_OK_AND_ASSIGN(auto ntp, OpenTable());
 
   ASSERT_OK_AND_ASSIGN(auto empty_shapes, ntp->GetRowShapes("VAR_SPARSE_DATA"));
-  auto fsl = std::dynamic_pointer_cast<arrow::FixedSizeListArray>(empty_shapes);
-  EXPECT_TRUE(fsl);
+  ASSERT_EQ(empty_shapes->type_id(), arrow::Type::FIXED_SIZE_LIST);
+  auto fsl = std::static_pointer_cast<arrow::FixedSizeListArray>(empty_shapes);
   // The column is completely empty
   EXPECT_EQ(fsl->length(), fsl->null_count());
   // ndim == 2

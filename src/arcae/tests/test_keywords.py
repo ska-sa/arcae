@@ -49,7 +49,10 @@ def test_float_keywords_roundtrip_exactly(keyword_table):
 
     with Table.from_filename(keyword_table, readonly=False) as T:
         T.putkeywords({"d": d})
-        Table.from_taql(f"ALTER TABLE $1 SET KEYWORD f={f} AS R4", T).close()
+
+    # Write an R4 keyword through a query that opens the table itself.
+    # A query over an open table ($1) runs under that table's read lock
+    Table.from_taql(f"ALTER TABLE '{keyword_table}' SET KEYWORD f={f} AS R4").close()
 
     with Table.from_filename(keyword_table) as T:
         assert T.getkeywords() == {"d": d, "f": float(np.float32(f))}

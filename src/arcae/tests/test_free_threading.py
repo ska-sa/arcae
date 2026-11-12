@@ -36,7 +36,7 @@ def sanity_table(tmp_path):
     names = np.array([f"name-{i}" for i in range(NROWS)])
 
     with Table.ms_from_descriptor(
-        str(tmp_path / "threads.ms"), "MAIN", TABLE_DESC, DMINFO
+        str(tmp_path / "threads.ms"), "MAIN", table_desc=TABLE_DESC, dminfo=DMINFO
     ) as T:
         T.addrows(NROWS)
         T.putcol("TIME", np.arange(NROWS, dtype=np.float64))

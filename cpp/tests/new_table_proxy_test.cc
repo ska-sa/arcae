@@ -5,8 +5,11 @@
 #include <filesystem>
 #include <limits>
 #include <memory>
+#include <numeric>
 #include <random>
 #include <string>
+#include <thread>
+#include <vector>
 
 #include <arrow/api.h>
 #include <arrow/array/array_base.h>
@@ -34,6 +37,7 @@
 
 #include "arcae/new_table_proxy.h"
 #include "arcae/selection.h"
+#include "arcae/table_factory.h"
 
 using ::arcae::GetArrayColumn;
 using ::arcae::GetScalarColumn;
@@ -107,7 +111,7 @@ class ZeroRowTableProxyTest : public ::testing::Test {
     return NewTableProxy::Make([name = table_name_]() {
       auto lock = TableLock(TableLock::LockOption::AutoLocking);
       auto lockoptions = Record();
-      lockoptions.define("option", "nolock");
+      lockoptions.define("option", "user");
       lockoptions.define("internal", lock.interval());
       lockoptions.define("maxwait", casacore::Int(lock.maxWait()));
       return std::make_shared<TableProxy>(name, lockoptions, Table::Old);
@@ -236,7 +240,7 @@ class FixedTableProxyTest : public ::testing::TestWithParam<Parametrization> {
         [&, name = table_name_]() {
           auto lock = TableLock(TableLock::LockOption::AutoLocking);
           auto lockoptions = Record();
-          lockoptions.define("option", "nolock");
+          lockoptions.define("option", "user");
           lockoptions.define("internal", lock.interval());
           lockoptions.define("maxwait", casacore::Int(lock.maxWait()));
           auto tp = std::make_shared<TableProxy>(name, lockoptions, Table::Old);
@@ -433,6 +437,111 @@ TEST_F(FixedTableProxyTest, AddColumns) {
   EXPECT_TRUE(dminfo.find(R"("NAME": "ACKBAR_GROUP")") != std::string::npos);
   EXPECT_TRUE(dminfo.find(R"("COLUMNS": ["ACK")") != std::string::npos) << dminfo;
   EXPECT_TRUE(dminfo.find(R"("BAR"])") != std::string::npos) << dminfo;
+}
+
+// Adding a column through one instance leaves the other instances
+// describing a table that no longer exists, unable to lock, read or close
+// it, unless AddColumns refreshes them
+TEST_F(FixedTableProxyTest, AddColumnsRefreshesInstances) {
+  ASSERT_OK_AND_ASSIGN(auto ntp, arcae::OpenTable(table_name_, knInstances, false));
+
+  auto column_desc = R"""(
+  {
+    "NEWCOL": {
+      "dataManagerGroup": "SSM",
+      "dataManagerType": "StandardStMan",
+      "valueType": "double"
+    }
+  }
+  )""";
+
+  ASSERT_OK(ntp->AddColumns(column_desc, "{}"));
+  std::vector<double> values(knrow);
+  std::iota(values.begin(), values.end(), 0.0);
+  std::shared_ptr<arrow::Array> data;
+  arrow::ArrayFromVector<arrow::DoubleType, double>(values, &data);
+  ASSERT_OK(ntp->PutColumn("NEWCOL", data));
+
+  // Enough concurrent reads that they are spread over every instance
+  constexpr std::size_t kThreads = 4 * knInstances;
+  std::vector<arrow::Status> statuses(kThreads);
+  std::vector<std::thread> threads;
+  for (std::size_t t = 0; t < kThreads; ++t) {
+    threads.emplace_back([&, t]() {
+      for (int i = 0; i < 10; ++i) {
+        auto column = (t + i) % 2 == 0 ? "NEWCOL" : "TIME";
+        auto result = ntp->GetColumn(column);
+        if (!result.ok()) {
+          statuses[t] = result.status();
+          return;
+        }
+        if (result.ValueUnsafe()->length() != knrow) {
+          statuses[t] = arrow::Status::Invalid(column, " has the wrong length");
+          return;
+        }
+      }
+    });
+  }
+  for (auto& thread : threads) thread.join();
+  for (const auto& status : statuses) EXPECT_OK(status);
+
+  ASSERT_OK_AND_ASSIGN(auto closed, ntp->Close());
+  EXPECT_TRUE(closed);
+}
+
+// A second handle's instances, and its writer, refresh themselves on next
+// use after the first handle adds a column
+TEST_F(FixedTableProxyTest, AddColumnsThroughAnotherHandle) {
+  ASSERT_OK_AND_ASSIGN(auto a, arcae::OpenTable(table_name_, knInstances, false));
+  ASSERT_OK_AND_ASSIGN(auto b, arcae::OpenTable(table_name_, knInstances, false));
+  ASSERT_OK(b->GetColumn("TIME"));
+
+  auto column_desc = R"""(
+  {"NEWCOL": {"dataManagerType": "StandardStMan", "valueType": "double"}}
+  )""";
+  ASSERT_OK(a->AddColumns(column_desc, "{}"));
+
+  std::vector<double> values(knrow);
+  std::iota(values.begin(), values.end(), 0.0);
+  std::shared_ptr<arrow::Array> data;
+  arrow::ArrayFromVector<arrow::DoubleType, double>(values, &data);
+  // Through b's writer, which is as stale as its readers
+  ASSERT_OK(b->PutColumn("NEWCOL", data));
+
+  constexpr std::size_t kThreads = 4 * knInstances;
+  std::vector<arrow::Status> statuses(kThreads);
+  std::vector<std::thread> threads;
+  for (std::size_t t = 0; t < kThreads; ++t) {
+    threads.emplace_back([&, t]() {
+      for (int i = 0; i < 10; ++i) {
+        auto result = b->GetColumn("NEWCOL");
+        if (!result.ok()) {
+          statuses[t] = result.status();
+          return;
+        }
+        if (!result.ValueUnsafe()->Equals(*data)) {
+          statuses[t] = arrow::Status::Invalid("NEWCOL has the wrong values");
+          return;
+        }
+      }
+    });
+  }
+  for (auto& thread : threads) thread.join();
+  for (const auto& status : statuses) EXPECT_OK(status);
+
+  ASSERT_OK(b->Close());
+  ASSERT_OK(a->Close());
+}
+
+// Without a way to reopen instances, AddColumns reports that it could not
+// refresh them rather than leaving them silently stale
+TEST_F(FixedTableProxyTest, AddColumnsWithoutReopen) {
+  ASSERT_OK_AND_ASSIGN(auto ntp, OpenTable(knInstances, false));
+  auto column_desc = R"""(
+  {"NEWCOL": {"dataManagerType": "StandardStMan", "valueType": "double"}}
+  )""";
+  EXPECT_RAISES_WITH_MESSAGE_THAT(NotImplemented, ::testing::HasSubstr("Refreshing"),
+                                  ntp->AddColumns(column_desc, "{}"));
 }
 
 TEST_F(ZeroRowTableProxyTest, ZeroRowCase) {
@@ -675,7 +784,7 @@ class VariableProxyTest : public ::testing::TestWithParam<Parametrization> {
     return NewTableProxy::Make([name = table_name_]() {
       auto lock = TableLock(TableLock::LockOption::AutoLocking);
       auto lockoptions = Record();
-      lockoptions.define("option", "nolock");
+      lockoptions.define("option", "user");
       lockoptions.define("internal", lock.interval());
       lockoptions.define("maxwait", casacore::Int(lock.maxWait()));
       return std::make_shared<TableProxy>(name, lockoptions, Table::Old);

@@ -10,6 +10,8 @@ X.Y.Z (DD-MM-YYYY)
 * Build arm64 macOS wheels on macos-15 runners, as macos-14 runners were
   retired on 02-11-2026. Pin the vcpkg dependency deployment target to 14.0
   so the wheels still support macOS 14 (:pr:`273`)
+* Upgrade to casacore 3.8.2, porting arcae's casacore patches onto its
+  reformatted sources (:pr:`275`)
 
 0.5.8 (20-10-2026)
 ------------------

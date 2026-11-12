@@ -53,7 +53,7 @@ VCPKG_DEFAULT_BINARY_CACHE=/host$VCPKG_HOST_BINARY_CACHE \
 VCPKG_INSTALLED_DIR=$VCPKG_INSTALLED_DIR \
 VCPKG_TARGET_TRIPLET=$VCPKG_TARGET_TRIPLET \
 LD_LIBRARY_PATH=$VCPKG_INSTALLED_DIR/$VCPKG_TARGET_TRIPLET/lib"
-export CIBW_REPAIR_WHEEL_COMMAND_LINUX="auditwheel repair -w {dest_dir} {wheel} --exclude libarrow_python.so.2300 --exclude libarrow.so.2300"
+export CIBW_REPAIR_WHEEL_COMMAND_LINUX="auditwheel repair -w {dest_dir} {wheel} --exclude libarrow_python.so.2600 --exclude libarrow.so.2600"
 # export CIBW_DEBUG_KEEP_CONTAINER=TRUE
 # export CIBW_DEBUG_TRACEBACK=TRUE
 # Use the following commands to inspect the stopped container:

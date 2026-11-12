@@ -12,6 +12,7 @@ X.Y.Z (DD-MM-YYYY)
   so the wheels still support macOS 14 (:pr:`273`)
 * Upgrade to casacore 3.8.2, porting arcae's casacore patches onto its
   reformatted sources (:pr:`275`)
+* Upgrade to pyarrow 26.0.1 (:pr:`276`)
 
 0.5.8 (20-10-2026)
 ------------------
